@@ -4,13 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CaramOS 2.0 Rust Installer, Bootloader Asset Stager (Reuses Existing Wallpapers), and Streaming Atomic OTA TUI"
+description = "CaramOS 2.0 Rust Branding Asset Stager (GRUB2, Plymouth, Calamares) and Streaming Atomic OTA TUI"
 
 [dependencies]
 clap.workspace = true
 hex.workspace = true
 image.workspace = true
-rpassword.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
