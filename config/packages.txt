@@ -4,7 +4,7 @@
 linux-image-amd64
 initramfs-tools
 zstd
-ive-boot
+live-boot
 live-config
 live-config-systemd
 user-setup
