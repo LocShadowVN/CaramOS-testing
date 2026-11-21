@@ -1,7 +1,8 @@
-# Rust workspace & crate build artifacts (CHẶN MỌI NHỊ PHÂN BIÊN DỊCH)
+# Rust workspace & crate build artifacts
 **/target/
 *.rs.bk
 *.pdb
+*.lock
 
 # ISO & build outputs
 build/
@@ -15,11 +16,12 @@ CaramOS-*.iso
 *.efi
 *.squashfs
 *.log
-Cargo.lock
 
 # Staged binaries & generated bootloader/OTA temp artifacts
 config/includes.chroot/usr/local/bin/caramos-ctl
 config/includes.chroot/usr/local/bin/caramos-ui
+config/includes.chroot/usr/local/bin/caramos-app-center
+config/includes.chroot/usr/local/bin/caramos-driver-check
 config/includes.chroot/boot/grub/themes/caramos/background.*
 *.tmp.caramos*
 *.caramos-*.bak
@@ -52,7 +54,6 @@ packages/caramos-ota/debian/files
 packages/caramos-ota/debian/*.substvars
 packages/caramos-ota/debian/*.debhelper
 packages/caramos-ota/debian/*.debhelper.log
-# Compiled from packages/caramos-ota/po/ at build time
 packages/caramos-ota/usr/share/locale/
 
 # Python cache
@@ -64,7 +65,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Mint ISO (large file, don't commit)
+# Mint ISO
 linuxmint-*.iso
 
 # Local VM test notes & AI tooling dirs
