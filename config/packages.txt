@@ -4,9 +4,12 @@
 linux-image-amd64
 initramfs-tools
 zstd
-live-boot
+ive-boot
 live-config
 live-config-systemd
+user-setup
+live-tools
+libpam-systemd
 systemd-sysv
 dbus
 dbus-x11
