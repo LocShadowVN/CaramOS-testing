@@ -12,14 +12,16 @@
 
 //! # CaramOS 2.0 Core Build & System Orchestrator (`caramos-ctl`)
 //!
-//! Trình điều phối đóng gói Live ISO Hybrid UEFI + Legacy BIOS nền Debian 13 (Trixie):
-//! - Kiểm định công cụ host & khóa OpenPGP Debian (`debian-archive-keyring`) trước khi chạy `mmdebstrap`.
-//! - Gắn kết Chroot an toàn chuẩn RAII (`ChrootMountGuard` + `ChrootPolicyRcGuard`).
-//! - Đồng bộ lớp phủ bảo toàn 100% symlink & phân quyền (`walkdir`), không làm bẩn cây Git bằng binary.
-//! - Biên dịch GSettings/dconf/Plymouth/initramfs trong chroot để bảo toàn bản sắc UI CaramOS.
-//! - Băm SHA-256 tăng tốc phần cứng (`sha2`) & cập nhật OTA truyền luồng `O(1)` RAM (`tempfile`).
+//! Trình điều phối đóng gói Live ISO Hybrid UEFI + Legacy BIOS nền Debian 13 (Trixie) 100% Rust:
+//! - Bootstrap trực tiếp từ Debian 13 (`mmdebstrap`) kèm khóa OpenPGP (`debian-archive-keyring`).
+//! - Cài sẵn native `fcitx5-lotus` (`LotusInputMethod/fcitx5-lotus`) từ GitHub Releases bằng Rust
+//!   (Zalo & bộ ứng dụng văn phòng do `caramos-app-center` cài theo lựa chọn; hỗ trợ `--bake-zalo`
+//!   nếu muốn đóng gói sẵn Zalo vào ISO).
+//! - Cấu hình sẵn tiếng Việt (`vi_VN.UTF-8`, `Asia/Ho_Chi_Minh`), `uinput` + `fcitx5-lotus` (`Ctrl+Shift`),
+//!   Flathub, chuyển Calamares sang `branding: caramos` và bảo toàn 100% lớp phủ UI CaramOS.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::OsString;
@@ -28,6 +30,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -56,6 +59,9 @@ pub enum CaramCtlError {
 
     #[error("[CTL_PREREQ_ERR] Thiếu điều kiện môi trường build: {detail}")]
     MissingPrerequisite { detail: String },
+
+    #[error("[CTL_NET_ERR] Lỗi tải tài nguyên từ '{url}': {reason}")]
+    NetworkFailure { url: String, reason: String },
 
     #[error("[CTL_IO_ERR] Lỗi khi '{context}'{}: {source}", fmt_opt_path(path))]
     IoFailure {
@@ -89,7 +95,7 @@ pub enum CaramCtlError {
 }
 
 // ============================================================================
-// 2. PHÒNG THỦ ĐƯỜNG DẪN, GHI NGUYÊN TỬ (`tempfile`) & ĐỒNG BỘ OVERLAY BẢO TOÀN SYMLINK
+// 2. PHÒNG THỦ ĐƯỜNG DẪN, GHI NGUYÊN TỬ (`tempfile`) & ĐỒNG BỘ OVERLAY SYMLINK
 // ============================================================================
 
 pub fn validate_safe_path(path: &Path) -> Result<(), CaramCtlError> {
@@ -366,8 +372,45 @@ fn stage_binary_into_rootfs(bin_src: &Path, rootfs: &Path) -> Result<PathBuf, Ca
     Ok(dst_path)
 }
 
+/// Chuyển Calamares của Debian (`branding: debian`) sang bộ nhận diện `branding: caramos`
+/// mà vẫn bảo toàn nguyên vẹn toàn bộ chuỗi module chuẩn của `calamares-settings-debian`.
+pub fn apply_calamares_caramos_branding(rootfs: &Path) -> Result<bool, CaramCtlError> {
+    let settings_path = rootfs.join("etc/calamares/settings.conf");
+    let branding_desc = rootfs.join("etc/calamares/branding/caramos/branding.desc");
+
+    if !settings_path.is_file() || !branding_desc.is_file() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&settings_path).map_err(|e| CaramCtlError::IoFailure {
+        context: "Đọc /etc/calamares/settings.conf".to_string(),
+        path: Some(settings_path.clone()),
+        source: e,
+    })?;
+
+    let mut replaced = false;
+    let mut new_lines = Vec::new();
+    for line in content.lines() {
+        if line.trim_start().starts_with("branding:") {
+            new_lines.push("branding: caramos".to_string());
+            replaced = true;
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        new_lines.push("branding: caramos".to_string());
+    }
+
+    let mut out = new_lines.join("\n");
+    out.push('\n');
+    atomic_write_file(&settings_path, out.as_bytes())?;
+    Ok(true)
+}
+
 // ============================================================================
-// 3. QUẢN LÝ TÀI NGUYÊN CHROOT RAII (MOUNT GUARD + POLICY-RC.D GUARD)
+// 3. QUẢN LÝ TÀI NGUYÊN CHROOT RAII (MOUNT + POLICY-RC.D + RESOLV.CONF)
 // ============================================================================
 
 pub struct ChrootMountGuard {
@@ -439,7 +482,6 @@ impl Drop for ChrootMountGuard {
     }
 }
 
-/// Chặn các daemon tự khởi chạy bên trong chroot khi cài đặt/cập nhật, tự dọn sạch khi Drop.
 struct ChrootPolicyRcGuard {
     path: Option<PathBuf>,
 }
@@ -467,6 +509,471 @@ impl Drop for ChrootPolicyRcGuard {
         }
     }
 }
+
+struct ChrootResolvConfGuard {
+    target: PathBuf,
+    backup_bytes: Option<Vec<u8>>,
+    backup_symlink: Option<PathBuf>,
+    active: bool,
+}
+
+impl ChrootResolvConfGuard {
+    fn install(rootfs: &Path, dry_run: bool) -> Result<Self, CaramCtlError> {
+        let target = rootfs.join("etc/resolv.conf");
+        if dry_run {
+            return Ok(Self {
+                target,
+                backup_bytes: None,
+                backup_symlink: None,
+                active: false,
+            });
+        }
+
+        let mut backup_bytes = None;
+        let mut backup_symlink = None;
+        if let Ok(meta) = target.symlink_metadata() {
+            if meta.file_type().is_symlink() {
+                backup_symlink = fs::read_link(&target).ok();
+                let _ = fs::remove_file(&target);
+            } else if meta.file_type().is_file() {
+                backup_bytes = fs::read(&target).ok();
+            }
+        }
+
+        let host_dns = fs::read("/etc/resolv.conf")
+            .unwrap_or_else(|_| b"nameserver 1.1.1.1\nnameserver 8.8.8.8\n".to_vec());
+        atomic_write_file(&target, &host_dns)?;
+
+        Ok(Self {
+            target,
+            backup_bytes,
+            backup_symlink,
+            active: true,
+        })
+    }
+}
+
+impl Drop for ChrootResolvConfGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _ = fs::remove_file(&self.target);
+        if let Some(ref link_dst) = self.backup_symlink {
+            #[cfg(unix)]
+            {
+                let _ = std::os::unix::fs::symlink(link_dst, &self.target);
+            }
+        } else if let Some(ref bytes) = self.backup_bytes {
+            let _ = atomic_write_file(&self.target, bytes);
+        }
+    }
+}
+
+// ============================================================================
+// 4. TẢI & CÀI GÓI `.deb` NATIVE TỪ GITHUB RELEASES BẰNG RUST (`fcitx5-lotus` & ZALO)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+struct GithubDebSpec<'a> {
+    repo: &'a str,
+    arch: &'a str,
+    name_prefix: Option<&'a str>,
+    prefer_codename: Option<&'a str>,
+}
+
+fn asset_matches_arch(lower_name: &str, arch: &str) -> bool {
+    lower_name.contains(arch)
+        || (arch == "amd64" && (lower_name.contains("x86_64") || lower_name.contains("x64")))
+}
+
+fn select_release_deb_asset<'a>(
+    assets: &'a [GithubAsset],
+    spec: &GithubDebSpec<'_>,
+) -> Option<&'a GithubAsset> {
+    let candidates: Vec<&GithubAsset> = assets
+        .iter()
+        .filter(|a| {
+            let lower = a.name.to_ascii_lowercase();
+            if !lower.ends_with(".deb") || lower.contains("dbgsym") || lower.contains("-dbg") {
+                return false;
+            }
+            if let Some(prefix) = spec.name_prefix {
+                if !lower.starts_with(prefix) {
+                    return false;
+                }
+            }
+            asset_matches_arch(&lower, spec.arch)
+        })
+        .collect();
+
+    if let Some(codename) = spec.prefer_codename {
+        if let Some(found) = candidates
+            .iter()
+            .copied()
+            .find(|a| a.name.to_ascii_lowercase().contains(codename))
+        {
+            return Some(found);
+        }
+    }
+
+    if let Some(found) = candidates
+        .iter()
+        .copied()
+        .find(|a| a.name.to_ascii_lowercase().contains("debian"))
+    {
+        return Some(found);
+    }
+
+    candidates.first().copied()
+}
+
+fn build_http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(300))
+        .build()
+}
+
+fn apply_github_headers(mut req: ureq::Request) -> ureq::Request {
+    req = req
+        .set("User-Agent", "caramos-ctl/2.0")
+        .set("Accept", "application/vnd.github+json");
+    if let Ok(token) = env::var("GITHUB_TOKEN") {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {}", trimmed));
+        }
+    }
+    req
+}
+
+fn download_github_release_deb<W: Write>(
+    spec: &GithubDebSpec<'_>,
+    dst_path: &Path,
+    writer: &mut W,
+) -> Result<String, CaramCtlError> {
+    validate_safe_path(dst_path)?;
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", spec.repo);
+    let agent = build_http_agent();
+
+    let release: GithubRelease = apply_github_headers(agent.get(&api_url))
+        .call()
+        .map_err(|e| CaramCtlError::NetworkFailure {
+            url: api_url.clone(),
+            reason: e.to_string(),
+        })?
+        .into_json()
+        .map_err(|e| CaramCtlError::NetworkFailure {
+            url: api_url.clone(),
+            reason: format!("Không giải mã được JSON GitHub Releases: {}", e),
+        })?;
+
+    let asset = select_release_deb_asset(&release.assets, spec).ok_or_else(|| {
+        CaramCtlError::NetworkFailure {
+            url: api_url.clone(),
+            reason: format!(
+                "Không tìm thấy tệp .deb phù hợp cho arch '{}' trong release '{}' của '{}'",
+                spec.arch, release.tag_name, spec.repo
+            ),
+        }
+    })?;
+
+    writeln!(
+        writer,
+        "  • Tải {} ({}) [{}]...",
+        asset.name, release.tag_name, spec.repo
+    )
+    .map_err(|e| CaramCtlError::IoFailure {
+        context: "Ghi log tải gói .deb".to_string(),
+        path: None,
+        source: e,
+    })?;
+
+    let parent = dst_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| CaramCtlError::IoFailure {
+        context: "Tạo thư mục lưu .deb tạm".to_string(),
+        path: Some(parent.to_path_buf()),
+        source: e,
+    })?;
+
+    let resp = agent
+        .get(&asset.browser_download_url)
+        .set("User-Agent", "caramos-ctl/2.0")
+        .call()
+        .map_err(|e| CaramCtlError::NetworkFailure {
+            url: asset.browser_download_url.clone(),
+            reason: e.to_string(),
+        })?;
+
+    let mut reader = resp.into_reader();
+    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| CaramCtlError::IoFailure {
+        context: "Tạo tệp tạm tải .deb".to_string(),
+        path: Some(parent.to_path_buf()),
+        source: e,
+    })?;
+    let tmp_path = tmp.path().to_path_buf();
+
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65_536];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| CaramCtlError::NetworkFailure {
+                url: asset.browser_download_url.clone(),
+                reason: format!("Lỗi luồng đọc HTTP: {}", e),
+            })?;
+        if n == 0 {
+            break;
+        }
+        if let Some(chunk) = buf.get(..n) {
+            hasher.update(chunk);
+            tmp.write_all(chunk).map_err(|e| CaramCtlError::IoFailure {
+                context: "Ghi dữ liệu .deb xuống đĩa".to_string(),
+                path: Some(tmp_path.clone()),
+                source: e,
+            })?;
+        }
+    }
+
+    let actual_sha256 = hex::encode(hasher.finalize());
+    if let Some(ref digest_field) = asset.digest {
+        if let Some(expected_hex) = digest_field.trim().strip_prefix("sha256:") {
+            let expected_norm = expected_hex.to_ascii_lowercase();
+            if actual_sha256 != expected_norm {
+                return Err(CaramCtlError::DigestMismatch {
+                    path: dst_path.to_path_buf(),
+                    expected: expected_norm,
+                    actual: actual_sha256,
+                });
+            }
+        }
+    }
+
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| CaramCtlError::IoFailure {
+            context: "Đồng bộ fsync tệp .deb".to_string(),
+            path: Some(tmp_path),
+            source: e,
+        })?;
+    set_unix_mode(tmp.path(), 0o644)?;
+    tmp.persist(dst_path).map_err(|e| CaramCtlError::IoFailure {
+        context: "Lưu tệp .deb vào rootfs/tmp".to_string(),
+        path: Some(dst_path.to_path_buf()),
+        source: e.error,
+    })?;
+
+    writeln!(
+        writer,
+        "    ✔ Đã xác thực {} (SHA-256: {}...)",
+        asset.name,
+        actual_sha256.get(..16).unwrap_or(actual_sha256.as_str())
+    )
+    .map_err(|e| CaramCtlError::IoFailure {
+        context: "Ghi log xác thực .deb".to_string(),
+        path: None,
+        source: e,
+    })?;
+
+    Ok(asset.name.clone())
+}
+
+fn install_caramos_extra_github_debs<W: Write>(
+    rootfs: &Path,
+    arch: &str,
+    bake_zalo: bool,
+    writer: &mut W,
+) -> Result<(), CaramCtlError> {
+    let tmp_dir = rootfs.join("tmp");
+    fs::create_dir_all(&tmp_dir).map_err(|e| CaramCtlError::IoFailure {
+        context: "Tạo /tmp trong rootfs".to_string(),
+        path: Some(tmp_dir.clone()),
+        source: e,
+    })?;
+
+    let lotus_deb = tmp_dir.join("fcitx5-lotus.deb");
+    let zalo_deb = tmp_dir.join("zalo-desktop.deb");
+
+    let lotus_spec = GithubDebSpec {
+        repo: "LotusInputMethod/fcitx5-lotus",
+        arch,
+        name_prefix: Some("fcitx5-lotus_"),
+        prefer_codename: Some("trixie"),
+    };
+
+    writeln!(
+        writer,
+        "▶ [CARAMOS CORE] Cài sẵn bộ gõ Fcitx5 Lotus từ GitHub Releases{}...",
+        if bake_zalo {
+            " + đóng gói sẵn Zalo Desktop (--bake-zalo)"
+        } else {
+            " (Zalo & ứng dụng khác do App Center cài theo lựa chọn)"
+        }
+    )
+    .map_err(|e| CaramCtlError::IoFailure {
+        context: "Ghi log cài fcitx5-lotus".to_string(),
+        path: None,
+        source: e,
+    })?;
+
+    download_github_release_deb(&lotus_spec, &lotus_deb, writer)?;
+
+    if bake_zalo {
+        let zalo_spec = GithubDebSpec {
+            repo: "VN-Linux-Family/Zalo-for-linux",
+            arch,
+            name_prefix: None,
+            prefer_codename: None,
+        };
+        download_github_release_deb(&zalo_spec, &zalo_deb, writer)?;
+    }
+
+    let mut install_args: Vec<&str> = vec![
+        "install",
+        "-y",
+        "--no-install-recommends",
+        "/tmp/fcitx5-lotus.deb",
+    ];
+    if bake_zalo {
+        install_args.push("/tmp/zalo-desktop.deb");
+    }
+
+    let install_result = (|| -> Result<(), CaramCtlError> {
+        run_chroot_if_present(
+            rootfs,
+            "/usr/bin/apt-get",
+            &["update"],
+            "chroot apt-get update for extra debs",
+        )?;
+        run_chroot_if_present(
+            rootfs,
+            "/usr/bin/apt-get",
+            &install_args,
+            "chroot apt-get install GitHub .deb packages",
+        )?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&lotus_deb);
+    let _ = fs::remove_file(&zalo_deb);
+
+    install_result
+}
+
+fn configure_vietnamese_caramos_defaults(rootfs: &Path) -> Result<(), CaramCtlError> {
+    let etc_dir = rootfs.join("etc");
+
+    let locale_gen_path = etc_dir.join("locale.gen");
+    let existing_locale = fs::read_to_string(&locale_gen_path).unwrap_or_default();
+    let mut updated_locale = existing_locale;
+    for entry in ["vi_VN.UTF-8 UTF-8", "en_US.UTF-8 UTF-8"] {
+        if !updated_locale.lines().any(|l| l.trim() == entry) {
+            if !updated_locale.is_empty() && !updated_locale.ends_with('\n') {
+                updated_locale.push('\n');
+            }
+            updated_locale.push_str(entry);
+            updated_locale.push('\n');
+        }
+    }
+    atomic_write_file(&locale_gen_path, updated_locale.as_bytes())?;
+    write_default_if_missing(
+        &etc_dir.join("default/locale"),
+        b"LANG=vi_VN.UTF-8\nLC_ALL=vi_VN.UTF-8\n",
+    )?;
+
+    write_default_if_missing(&etc_dir.join("timezone"), b"Asia/Ho_Chi_Minh\n")?;
+    let localtime_path = etc_dir.join("localtime");
+    if localtime_path.symlink_metadata().is_err()
+        && rootfs
+            .join("usr/share/zoneinfo/Asia/Ho_Chi_Minh")
+            .is_file()
+    {
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(
+                "/usr/share/zoneinfo/Asia/Ho_Chi_Minh",
+                &localtime_path,
+            );
+        }
+    }
+
+    write_default_if_missing(
+        &etc_dir.join("modules-load.d/caramos-uinput.conf"),
+        b"uinput\n",
+    )?;
+
+    let env_path = etc_dir.join("environment");
+    let mut env_content = fs::read_to_string(&env_path).unwrap_or_default();
+    for line in [
+        "GTK_IM_MODULE=fcitx",
+        "QT_IM_MODULE=fcitx",
+        "XMODIFIERS=@im=fcitx",
+        "SDL_IM_MODULE=fcitx",
+    ] {
+        let key_prefix = line.split('=').next().unwrap_or(line);
+        if !env_content
+            .lines()
+            .any(|l| l.trim_start().starts_with(key_prefix))
+        {
+            if !env_content.is_empty() && !env_content.ends_with('\n') {
+                env_content.push('\n');
+            }
+            env_content.push_str(line);
+            env_content.push('\n');
+        }
+    }
+    atomic_write_file(&env_path, env_content.as_bytes())?;
+
+    let skel_fcitx5 = etc_dir.join("skel/.config/fcitx5");
+    let default_profile = "\
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=lotus
+
+[Groups/0/Items/0]
+Name=lotus
+Layout=
+
+[Groups/0/Items/1]
+Name=keyboard-us
+Layout=
+
+[GroupOrder]
+0=Default
+";
+    write_default_if_missing(&skel_fcitx5.join("profile"), default_profile.as_bytes())?;
+
+    let default_fcitx5_cfg = "\
+[Hotkey/TriggerKeys]
+0=Control+Shift_L
+1=Control+Shift_R
+";
+    write_default_if_missing(&skel_fcitx5.join("config"), default_fcitx5_cfg.as_bytes())?;
+
+    Ok(())
+}
+
+// ============================================================================
+// 5. KIỂM ĐỊNH MÔI TRƯỜNG HOST & TIẾN TRÌNH CHROOT
+// ============================================================================
 
 fn find_in_path(binary: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
@@ -614,7 +1121,7 @@ fn run_chroot_if_present(
 }
 
 // ============================================================================
-// 4. PIPELINE ĐÓNG GÓI LIVE ISO HYBRID UEFI/BIOS (TYPESTATE BUILDER)
+// 6. PIPELINE ĐÓNG GÓI LIVE ISO HYBRID UEFI/BIOS (TYPESTATE BUILDER)
 // ============================================================================
 
 pub const DEFAULT_ISO_FILENAME: &str = "CaramOS-2.0.0-debian-trixie-amd64.iso";
@@ -639,6 +1146,8 @@ pub struct BuildConfig {
     pub stage_bins: Vec<PathBuf>,
     pub packages_file: PathBuf,
     pub output_iso: PathBuf,
+    pub skip_extra_apps: bool,
+    pub bake_zalo: bool,
     pub dry_run: bool,
 }
 
@@ -759,8 +1268,7 @@ impl IsoBuildPipeline<StageRootfsBootstrapped> {
     ) -> Result<IsoBuildPipeline<StageChrootConfigured>, CaramCtlError> {
         writeln!(
             writer,
-            "▶ [STAGE 2/4] Cấu hình Debian 13 Live & Áp lớp phủ UI CaramOS từ '{}'...",
-            self.config.includes_chroot_dir.display()
+            "▶ [STAGE 2/4] Cấu hình CaramOS (Tiếng Việt, Fcitx5 Lotus, Calamares, Rust Apps) & Áp lớp phủ UI..."
         )
         .map_err(|e| CaramCtlError::IoFailure {
             context: "Ghi log Stage 2".to_string(),
@@ -784,7 +1292,7 @@ VERSION=\"2.0.0 (Trixie)\"\n\
 VERSION_CODENAME=trixie\n\
 ID=caramos\n\
 ID_LIKE=debian\n\
-HOME_URL=\"https://github.com/LocShadowVN/CaramOS-testing\"\n";
+HOME_URL=\"https://caramos.vietnamlinuxfamily.net\"\n";
         atomic_write_file(&etc_dir.join("os-release"), os_release.as_bytes())?;
         write_default_if_missing(&etc_dir.join("caramos-release"), b"CARAMOS_VERSION=2.0.0\n")?;
         write_default_if_missing(&etc_dir.join("hostname"), b"caramos-live\n")?;
@@ -807,56 +1315,123 @@ GRUB_GFXPAYLOAD_LINUX=keep\n\
 GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
         write_default_if_missing(&default_dir.join("grub"), fallback_grub.as_bytes())?;
 
-        let primary_count =
-            copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
-        writeln!(
-            writer,
-            "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
-            primary_count,
-            self.config.includes_chroot_dir.display()
-        )
-        .map_err(|e| CaramCtlError::IoFailure {
-            context: "Ghi log overlay chính".to_string(),
-            path: None,
-            source: e,
-        })?;
-
-        for extra in &self.config.extra_overlays {
-            if extra.exists() {
-                let extra_count = copy_directory_tree_overlay(extra, &self.rootfs_dir)?;
-                writeln!(
-                    writer,
-                    "  ✔ Đã đồng bộ {} mục từ extra-overlay '{}'.",
-                    extra_count,
-                    extra.display()
-                )
-                .map_err(|e| CaramCtlError::IoFailure {
-                    context: "Ghi log extra overlay".to_string(),
-                    path: None,
-                    source: e,
-                })?;
-            }
-        }
-
-        for bin in &self.config.stage_bins {
-            let installed = stage_binary_into_rootfs(bin, &self.rootfs_dir)?;
-            writeln!(
-                writer,
-                "  ✔ Đã cài đặt binary '{}' -> '{}'.",
-                bin.display(),
-                installed.display()
-            )
-            .map_err(|e| CaramCtlError::IoFailure {
-                context: "Ghi log stage-bin".to_string(),
-                path: None,
-                source: e,
-            })?;
-        }
+        configure_vietnamese_caramos_defaults(&self.rootfs_dir)?;
 
         {
             let _mount_guard = ChrootMountGuard::mount_all(&self.rootfs_dir, self.config.dry_run)?;
             let _policy_guard =
                 ChrootPolicyRcGuard::install(&self.rootfs_dir, self.config.dry_run)?;
+            let _resolv_guard =
+                ChrootResolvConfGuard::install(&self.rootfs_dir, self.config.dry_run)?;
+
+            if !self.config.dry_run {
+                let _ = run_chroot_if_present(
+                    &self.rootfs_dir,
+                    "/usr/sbin/locale-gen",
+                    &[],
+                    "chroot locale-gen",
+                )?;
+
+                if !self.config.skip_extra_apps {
+                    install_caramos_extra_github_debs(
+                        &self.rootfs_dir,
+                        &self.config.arch,
+                        self.config.bake_zalo,
+                        writer,
+                    )?;
+                }
+
+                let has_lotus_unit = self
+                    .rootfs_dir
+                    .join("usr/lib/systemd/system/fcitx5-lotus-server@.service")
+                    .is_file()
+                    || self
+                        .rootfs_dir
+                        .join("lib/systemd/system/fcitx5-lotus-server@.service")
+                        .is_file();
+                if has_lotus_unit {
+                    let _ = run_chroot_if_present(
+                        &self.rootfs_dir,
+                        "/usr/bin/systemctl",
+                        &["enable", "fcitx5-lotus-server@caram.service"],
+                        "chroot enable fcitx5-lotus-server@caram",
+                    );
+                }
+
+                if self.rootfs_dir.join("usr/bin/flatpak").is_file() {
+                    let _ = run_chroot_if_present(
+                        &self.rootfs_dir,
+                        "/usr/bin/flatpak",
+                        &[
+                            "remote-add",
+                            "--if-not-exists",
+                            "--system",
+                            "flathub",
+                            "https://dl.flathub.org/repo/flathub.flatpakrepo",
+                        ],
+                        "chroot flatpak remote-add flathub",
+                    );
+                }
+            }
+
+            // Áp lớp phủ bản sắc CaramOS gốc + extra-overlay (GRUB2/Plymouth/Calamares/Autostart)
+            let primary_count =
+                copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
+            writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
+                primary_count,
+                self.config.includes_chroot_dir.display()
+            )
+            .map_err(|e| CaramCtlError::IoFailure {
+                context: "Ghi log overlay chính".to_string(),
+                path: None,
+                source: e,
+            })?;
+
+            for extra in &self.config.extra_overlays {
+                if extra.exists() {
+                    let extra_count = copy_directory_tree_overlay(extra, &self.rootfs_dir)?;
+                    writeln!(
+                        writer,
+                        "  ✔ Đã đồng bộ {} mục từ extra-overlay '{}'.",
+                        extra_count,
+                        extra.display()
+                    )
+                    .map_err(|e| CaramCtlError::IoFailure {
+                        context: "Ghi log extra overlay".to_string(),
+                        path: None,
+                        source: e,
+                    })?;
+                }
+            }
+
+            if apply_calamares_caramos_branding(&self.rootfs_dir)? {
+                writeln!(
+                    writer,
+                    "  ✔ Đã kích hoạt branding 'caramos' trong /etc/calamares/settings.conf."
+                )
+                .map_err(|e| CaramCtlError::IoFailure {
+                    context: "Ghi log Calamares branding".to_string(),
+                    path: None,
+                    source: e,
+                })?;
+            }
+
+            for bin in &self.config.stage_bins {
+                let installed = stage_binary_into_rootfs(bin, &self.rootfs_dir)?;
+                writeln!(
+                    writer,
+                    "  ✔ Đã cài đặt binary '{}' -> '{}'.",
+                    bin.display(),
+                    installed.display()
+                )
+                .map_err(|e| CaramCtlError::IoFailure {
+                    context: "Ghi log stage-bin".to_string(),
+                    path: None,
+                    source: e,
+                })?;
+            }
 
             if !self.config.dry_run {
                 if self.rootfs_dir.join("usr/share/glib-2.0/schemas").is_dir() {
@@ -1041,13 +1616,8 @@ if [ -f /boot/grub/themes/caramos/theme.txt ]; then
     export theme
 fi
 
-menuentry "CaramOS 2.0 Live Desktop (Debian 13 Trixie)" {
+menuentry "CaramOS 2.0 Live Desktop & Cài Đặt (Debian 13 Trixie)" {
     linux /live/vmlinuz boot=live components quiet splash locales=vi_VN.UTF-8,en_US.UTF-8 username=caram hostname=caramos-live loglevel=3 mitigations=auto init_on_alloc=1
-    initrd /live/initrd.img
-}
-
-menuentry "CaramOS 2.0 Interactive Installer (Trình Cài Đặt)" {
-    linux /live/vmlinuz boot=live components quiet splash locales=vi_VN.UTF-8,en_US.UTF-8 username=caram hostname=caramos-live caramos.mode=installer mitigations=auto init_on_alloc=1
     initrd /live/initrd.img
 }
 
@@ -1314,7 +1884,7 @@ fn copy_kernel_and_initrd(rootfs: &Path, live_dir: &Path) -> Result<(), CaramCtl
 }
 
 // ============================================================================
-// 5. GIẢI CỨU APPLET & DỌN DẸP DI SẢN (`prune`)
+// 7. GIẢI CỨU APPLET & DỌN DẸP DI SẢN (`prune`)
 // ============================================================================
 
 pub fn prune_legacy_artifacts<W: Write>(
@@ -1416,7 +1986,7 @@ pub fn prune_legacy_artifacts<W: Write>(
 }
 
 // ============================================================================
-// 6. SHA-256 TĂNG TỐC PHẦN CỨNG (`sha2`) & OTA NGUYÊN TỬ TRUYỀN LUỒNG `O(1)` RAM
+// 8. SHA-256 TĂNG TỐC PHẦN CỨNG (`sha2`) & OTA NGUYÊN TỬ TRUYỀN LUỒNG `O(1)` RAM
 // ============================================================================
 
 pub fn compute_file_sha256(path: &Path) -> Result<String, CaramCtlError> {
@@ -1583,7 +2153,7 @@ pub fn apply_atomic_ota(req: &OtaApplyRequest<'_>) -> Result<(), CaramCtlError> 
 }
 
 // ============================================================================
-// 7. GIAO DIỆN DÒNG LỆNH CHUẨN HÓA (`clap`)
+// 9. GIAO DIỆN DÒNG LỆNH CHUẨN HÓA (`clap`)
 // ============================================================================
 
 #[derive(Debug, Parser)]
@@ -1606,7 +2176,7 @@ enum Commands {
         #[arg(long)]
         execute: bool,
     },
-    /// Đóng gói Live ISO Hybrid UEFI/BIOS nền Debian 13 (Trixie)
+    /// Đóng gói Live ISO Hybrid UEFI/BIOS nền Debian 13 (Trixie) + Fcitx5 Lotus + Calamares
     Build {
         #[arg(long, default_value = "amd64")]
         arch: String,
@@ -1630,6 +2200,11 @@ enum Commands {
         packages_file: PathBuf,
         #[arg(long)]
         output_iso: Option<PathBuf>,
+        #[arg(long)]
+        skip_extra_apps: bool,
+        /// Tùy chọn nhúng sẵn Zalo Desktop vào ISO (mặc định cài qua CaramOS App Center)
+        #[arg(long)]
+        bake_zalo: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -1691,6 +2266,8 @@ pub fn run_cli(args: &[String]) -> Result<(), CaramCtlError> {
             stage_bins,
             packages_file,
             output_iso,
+            skip_extra_apps,
+            bake_zalo,
             dry_run,
         } => {
             let final_compression = if release {
@@ -1711,6 +2288,8 @@ pub fn run_cli(args: &[String]) -> Result<(), CaramCtlError> {
                 stage_bins,
                 packages_file,
                 output_iso: final_output,
+                skip_extra_apps,
+                bake_zalo,
                 dry_run,
             };
 
@@ -1775,13 +2354,67 @@ fn main() -> ExitCode {
 }
 
 // ============================================================================
-// 8. KIỂM CHỨNG ĐƠN VỊ (SHA-256, SYMLINK OVERLAY, STAGE-BIN & HYBRID GRUB)
+// 10. KIỂM CHỨNG ĐƠN VỊ (CALAMARES PATCH, GITHUB ASSET SELECTOR, SYMLINK)
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_github_deb_asset_selection_lotus_and_zalo() {
+        let lotus_assets = vec![
+            GithubAsset {
+                name: "fcitx5-lotus-dbgsym_6.1.1-1_amd64_trixie.deb".to_string(),
+                browser_download_url: "https://example.invalid/dbg.deb".to_string(),
+                digest: None,
+            },
+            GithubAsset {
+                name: "fcitx5-lotus_6.1.1-1_amd64_noble.deb".to_string(),
+                browser_download_url: "https://example.invalid/noble.deb".to_string(),
+                digest: None,
+            },
+            GithubAsset {
+                name: "fcitx5-lotus_6.1.1-1_amd64_trixie.deb".to_string(),
+                browser_download_url: "https://example.invalid/trixie.deb".to_string(),
+                digest: None,
+            },
+        ];
+        let lotus_spec = GithubDebSpec {
+            repo: "LotusInputMethod/fcitx5-lotus",
+            arch: "amd64",
+            name_prefix: Some("fcitx5-lotus_"),
+            prefer_codename: Some("trixie"),
+        };
+        assert_eq!(
+            select_release_deb_asset(&lotus_assets, &lotus_spec).map(|a| a.name.as_str()),
+            Some("fcitx5-lotus_6.1.1-1_amd64_trixie.deb")
+        );
+
+        let zalo_assets = vec![
+            GithubAsset {
+                name: "Zalo-Desktop-0.1.5-x86_64.AppImage".to_string(),
+                browser_download_url: "https://example.invalid/zalo.AppImage".to_string(),
+                digest: None,
+            },
+            GithubAsset {
+                name: "zalo-desktop_0.1.5_amd64.deb".to_string(),
+                browser_download_url: "https://example.invalid/zalo.deb".to_string(),
+                digest: None,
+            },
+        ];
+        let zalo_spec = GithubDebSpec {
+            repo: "VN-Linux-Family/Zalo-for-linux",
+            arch: "amd64",
+            name_prefix: None,
+            prefer_codename: None,
+        };
+        assert_eq!(
+            select_release_deb_asset(&zalo_assets, &zalo_spec).map(|a| a.name.as_str()),
+            Some("zalo-desktop_0.1.5_amd64.deb")
+        );
+    }
 
     #[test]
     fn test_sha256_fips_180_4_vectors() -> Result<(), CaramCtlError> {
@@ -1807,7 +2440,8 @@ mod tests {
     }
 
     #[test]
-    fn test_overlay_preserves_symlinks_and_stages_bins_cleanly() -> Result<(), CaramCtlError> {
+    fn test_pipeline_patches_calamares_branding_and_preserves_symlinks(
+    ) -> Result<(), CaramCtlError> {
         let temp_base = TempDir::new().map_err(|e| CaramCtlError::IoFailure {
             context: "Tạo TempDir test pipeline".to_string(),
             path: None,
@@ -1819,29 +2453,19 @@ mod tests {
         let pkg_file = temp_base.path().join("config/packages.txt");
         let fake_ui_bin = temp_base.path().join("caramos-ui");
 
-        let bg_real = includes_dir.join("usr/share/backgrounds/caramos/indigo-night.png");
-        atomic_write_file(&bg_real, b"CARAMOS_EXISTING_WALLPAPER_PNG")?;
+        atomic_write_file(
+            &work_dir.join("rootfs/etc/calamares/settings.conf"),
+            b"modules-search: [ local ]\nbranding: debian\nprompt-install: true\n",
+        )?;
 
-        #[cfg(unix)]
-        {
-            let icon_dir = includes_dir.join("usr/share/icons/Tela-circle");
-            fs::create_dir_all(&icon_dir).map_err(|e| CaramCtlError::IoFailure {
-                context: "Tạo thư mục icon test".to_string(),
-                path: Some(icon_dir.clone()),
-                source: e,
-            })?;
-            atomic_write_file(&icon_dir.join("target.svg"), b"<svg/>")?;
-            std::os::unix::fs::symlink("target.svg", icon_dir.join("link.svg")).map_err(|e| {
-                CaramCtlError::IoFailure {
-                    context: "Tạo symlink test".to_string(),
-                    path: None,
-                    source: e,
-                }
-            })?;
-        }
-
-        let theme_png = ui_overlay.join("boot/grub/themes/caramos/background.png");
-        atomic_write_file(&theme_png, b"EXISTING_PNG_REUSED_FOR_GRUB")?;
+        atomic_write_file(
+            &ui_overlay.join("etc/calamares/branding/caramos/branding.desc"),
+            b"componentName: caramos\n",
+        )?;
+        atomic_write_file(
+            &ui_overlay.join("boot/grub/themes/caramos/background.png"),
+            b"EXISTING_PNG_REUSED_FOR_GRUB",
+        )?;
         atomic_write_file(
             &ui_overlay.join("boot/grub/themes/caramos/theme.txt"),
             b"desktop-image: \"background.png\"\n",
@@ -1861,6 +2485,8 @@ mod tests {
             extra_overlays: vec![ui_overlay],
             stage_bins: vec![fake_ui_bin],
             packages_file: pkg_file,
+            skip_extra_apps: false,
+            bake_zalo: false,
             dry_run: true,
         };
 
@@ -1871,27 +2497,17 @@ mod tests {
         let p = p.pack_squashfs_and_stage_bootloader(&mut log)?;
         let _p = p.build_hybrid_iso(&mut log)?;
 
-        assert!(work_dir.join("rootfs/usr/local/bin/caramos-ui").is_file());
-        assert!(work_dir.join("iso_staging/.disk/caramos-iso").is_file());
-        assert!(work_dir
-            .join("iso_staging/boot/grub/themes/caramos/background.png")
-            .is_file());
-
-        #[cfg(unix)]
-        {
-            let staged_link = work_dir.join("rootfs/usr/share/icons/Tela-circle/link.svg");
-            let meta = staged_link.symlink_metadata().map_err(|e| CaramCtlError::IoFailure {
-                context: "Kiểm tra symlink trong rootfs".to_string(),
-                path: Some(staged_link),
-                source: e,
+        let patched_settings =
+            fs::read_to_string(work_dir.join("rootfs/etc/calamares/settings.conf")).map_err(|e| {
+                CaramCtlError::IoFailure {
+                    context: "Đọc calamares settings.conf".to_string(),
+                    path: None,
+                    source: e,
+                }
             })?;
-            assert!(meta.file_type().is_symlink());
-        }
-
+        assert!(patched_settings.contains("branding: caramos"));
+        assert!(!patched_settings.contains("branding: debian"));
         assert!(work_dir.join(DEFAULT_ISO_FILENAME).is_file());
-        assert!(work_dir
-            .join(format!("{}.sha256", DEFAULT_ISO_FILENAME))
-            .is_file());
 
         Ok(())
     }
