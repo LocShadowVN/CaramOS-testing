@@ -1,4 +1,4 @@
-# CaramOS 2.0 — Pure Debian 13 (Trixie) Core Package Manifest
+# CaramOS 2.0 — Core Vietnamese Desktop, Calamares & GTK4 Rust Apps (Debian 13 Trixie)
 
 # Nhân Linux, Live Boot & Khởi tạo hệ thống
 linux-image-amd64
@@ -11,13 +11,26 @@ systemd-sysv
 dbus
 dbus-x11
 polkitd
+pkexec
 ca-certificates
 curl
 locales
+acl
+pciutils
+usbutils
+cups
 network-manager
 network-manager-gnome
 wpasupplicant
+blueman
+
+# Firmware phần cứng (Wi-Fi Intel/Realtek, GPU AMD/Intel, Bluetooth)
 firmware-linux-free
+firmware-iwlwifi
+firmware-realtek
+firmware-amd-graphics
+firmware-intel-graphics
+firmware-misc-nonfree
 
 # Công cụ hệ thống & Rust Userland sẵn có trên Debian 13 (Trixie)
 sudo
@@ -25,25 +38,70 @@ rust-coreutils
 ripgrep
 fd-find
 
-# Môi trường Desktop Cinnamon & Công cụ biên dịch GSettings/dconf giữ bản sắc CaramOS
+# Trình cài đặt đồ họa Calamares + Qt6 QML Slideshow
+calamares
+calamares-settings-debian
+qml6-module-qtquick
+qml6-module-qtquick-controls
+qml6-module-qtquick-layouts
+qml6-module-qtquick-window
+
+# Thư viện giao diện GTK4 + libadwaita cho CaramOS App Center & Driver Check (Rust)
+libgtk-4-1
+libadwaita-1-0
+
+# Môi trường Desktop Cinnamon & Công cụ giữ nguyên bản sắc UI CaramOS
 cinnamon-core
 lightdm
 lightdm-gtk-greeter
 gnome-terminal
 libglib2.0-bin
 dconf-cli
+libnotify-bin
+xdg-utils
+xdg-user-dirs-gtk
 xorg
 xserver-xorg-video-all
 xserver-xorg-input-all
 
-# Âm thanh hiện đại (PipeWire đầy đủ ALSA + PulseAudio + WirePlumber)
+# Nền tảng bộ gõ tiếng Việt Fcitx5 (fcitx5-lotus được caramos-ctl cài sẵn vào ISO)
+fcitx5
+fcitx5-modules
+fcitx5-config-qt
+fcitx5-frontend-gtk3
+fcitx5-frontend-gtk4
+fcitx5-frontend-qt5
+fcitx5-frontend-qt6
+im-config
+
+# Âm thanh hiện đại (PipeWire + WirePlumber)
 pipewire
 pipewire-audio
 pipewire-alsa
 pipewire-pulse
 wireplumber
 
-# Công cụ phân vùng, Cài đặt SquashFS, Bootloader GRUB2 UEFI/BIOS & Plymouth
+# Ứng dụng cơ bản sẵn có trong Live ISO (Zalo, ONLYOFFICE, Chrome... cài 1 chạm qua App Center)
+firefox-esr
+firefox-esr-l10n-vi
+vlc
+eog
+evince
+gnome-text-editor
+gnome-calculator
+gnome-screenshot
+file-roller
+nemo-fileroller
+flatpak
+
+# Font chữ tiếng Việt, Emoji & Tương thích tài liệu Microsoft
+fonts-dejavu-core
+fonts-noto-core
+fonts-noto-color-emoji
+fonts-liberation
+fonts-crosextra-carlito
+
+# Công cụ phân vùng, Bootloader GRUB2 UEFI/BIOS & Plymouth
 squashfs-tools
 grub-common
 grub2-common
@@ -55,4 +113,3 @@ e2fsprogs
 parted
 plymouth
 plymouth-themes
-fonts-dejavu-core
