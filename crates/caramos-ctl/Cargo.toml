@@ -9,7 +9,9 @@ description = "CaramOS 2.0 Memory-Safe System Controller, Hybrid ISO Build Orche
 [dependencies]
 clap.workspace = true
 hex.workspace = true
+serde.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+ureq.workspace = true
 walkdir.workspace = true
