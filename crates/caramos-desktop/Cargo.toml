@@ -1,0 +1,25 @@
+[package]
+name = "caramos-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CaramOS 2.0 Native GTK4/Libadwaita Rust Desktop Suite (App Center & Driver Check)"
+
+[[bin]]
+name = "caramos-app-center"
+path = "src/bin/caramos_app_center.rs"
+
+[[bin]]
+name = "caramos-driver-check"
+path = "src/bin/caramos_driver_check.rs"
+
+[dependencies]
+async-channel.workspace = true
+gtk4.workspace = true
+hex.workspace = true
+libadwaita.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+ureq.workspace = true
