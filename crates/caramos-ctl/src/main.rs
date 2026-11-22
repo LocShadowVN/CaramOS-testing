@@ -13,10 +13,12 @@
 //! # CaramOS 2.0 Core Build & System Orchestrator (`caramos-ctl`)
 //!
 //! Trình điều phối đóng gói Live ISO Hybrid UEFI + Legacy BIOS nền Debian 13 (Trixie) 100% Rust:
-//! - Bootstrap trực tiếp từ Debian 13 (`mmdebstrap`) kèm khóa OpenPGP (`debian-archive-keyring`).
-//! - Cài sẵn native `fcitx5-lotus` (`LotusInputMethod/fcitx5-lotus`) từ GitHub Releases bằng Rust.
-//! - Ưu tiên tuyệt đối tái sử dụng CSS/Theme/Icon/Cursor/Applet gốc trong `config/includes.chroot/`,
-//!   chuyển Calamares sang `branding: caramos`, biên dịch `dconf` + `glib-compile-schemas` + icon cache.
+//! - Bootstrap trực tiếp từ Debian 13 (`mmdebstrap`) kèm khóa OpenPGP (`debian-archive-keyring`)
+//!   và cấu hình truyền tải APT chống đứt kết nối CDN.
+//! - Cài sẵn native `fcitx5-lotus` (`LotusInputMethod/fcitx5-lotus`) từ GitHub Releases bằng Rust
+//!   (Zalo & ứng dụng khác do `caramos-app-center` cài theo lựa chọn; hỗ trợ `--bake-zalo`).
+//! - Ưu tiên tận dụng theme/icon/cursor/applet gốc CaramOS, kích hoạt `branding: caramos` cho
+//!   Calamares, biên dịch `dconf` + `glib-compile-schemas` + cache icon `hicolor`/Papirus/Tela-circle.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -445,8 +447,8 @@ fn detect_first_matching_dir(
     None
 }
 
-/// Ưu tiên tận dụng 100% theme/CSS/icon/cursor/applet sẵn có từ `config/includes.chroot/` của CaramOS,
-/// chỉ fallback sang `CaramOS-Island` / `Arc` / `Papirus` / `breeze_cursors` nếu tài nguyên gốc vắng mặt.
+/// Ưu tiên tận dụng theme/CSS/icon/cursor/applet gốc từ `config/includes.chroot/`,
+/// chỉ fallback sang `CaramOS-Island` (3 đảo nổi) / `Arc` / `Papirus` / `breeze_cursors`.
 fn configure_cinnamon_caramos_desktop<W: Write>(
     rootfs: &Path,
     writer: &mut W,
@@ -539,7 +541,7 @@ fn configure_cinnamon_caramos_desktop<W: Write>(
     let dconf_defaults = format!(
         "[org/cinnamon]\n\
          panels-enabled=['1:0:bottom']\n\
-         panels-height=['1:48']\n\
+         panels-height=['1:52']\n\
          enabled-applets=[{left_menu}, 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
          {extensions_line}\
          next-applet-id=10\n\
@@ -571,7 +573,7 @@ fn configure_cinnamon_caramos_desktop<W: Write>(
     let gschema_override = format!(
         "[org.cinnamon]\n\
          panels-enabled=['1:0:bottom']\n\
-         panels-height=['1:48']\n\
+         panels-height=['1:52']\n\
          enabled-applets=[{left_menu}, 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
          {extensions_line}\
          next-applet-id=10\n\
@@ -1442,7 +1444,12 @@ impl IsoBuildPipeline<StageInit> {
                 .arg("--variant=minbase")
                 .arg("--components=main,contrib,non-free,non-free-firmware")
                 .arg(format!("--keyring={}", keyring.display()))
-                .arg("--aptopt=Acquire::Retries \"3\"")
+                .arg("--aptopt=Acquire::Retries \"6\"")
+                .arg("--aptopt=Acquire::http::Pipeline-Depth \"0\"")
+                .arg("--aptopt=Acquire::https::Pipeline-Depth \"0\"")
+                .arg("--aptopt=Acquire::http::Timeout \"60\"")
+                .arg("--aptopt=Acquire::https::Timeout \"60\"")
+                .arg("--aptopt=Acquire::ForceIPv4 \"true\"")
                 .arg(format!("--include={}", pkg_csv))
                 .arg("trixie")
                 .arg(&self.rootfs_dir)
@@ -1466,7 +1473,7 @@ impl IsoBuildPipeline<StageRootfsBootstrapped> {
     ) -> Result<IsoBuildPipeline<StageChrootConfigured>, CaramCtlError> {
         writeln!(
             writer,
-            "▶ [STAGE 2/4] Cấu hình CaramOS (Tiếng Việt, Fcitx5 Lotus, Calamares, Theme gốc) & Áp lớp phủ UI..."
+            "▶ [STAGE 2/4] Cấu hình CaramOS (Tiếng Việt, Fcitx5 Lotus, Calamares, Island Dock) & Áp lớp phủ UI..."
         )
         .map_err(|e| CaramCtlError::IoFailure {
             context: "Ghi log Stage 2".to_string(),
@@ -1572,7 +1579,22 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                 }
             }
 
-            // 1. Áp extra-overlay trước (GRUB2/Plymouth/LightDM/Calamares/CaramOS-Island fallback)
+            // 1. Áp lớp phủ gốc `config/includes.chroot` (hình nền, font, theme/applet gốc CaramOS)
+            let primary_count =
+                copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
+            writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
+                primary_count,
+                self.config.includes_chroot_dir.display()
+            )
+            .map_err(|e| CaramCtlError::IoFailure {
+                context: "Ghi log overlay chính".to_string(),
+                path: None,
+                source: e,
+            })?;
+
+            // 2. Áp extra-overlay (GRUB2 9-slice, LightDM, Island Dock CSS, Logo Start Menu, Autostart)
             for extra in &self.config.extra_overlays {
                 if extra.exists() {
                     let extra_count = copy_directory_tree_overlay(extra, &self.rootfs_dir)?;
@@ -1589,21 +1611,6 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                     })?;
                 }
             }
-
-            // 2. Áp lớp phủ bản sắc gốc `config/includes.chroot` SAU CÙNG (Overlay-Last: ưu tiên tuyệt đối theme/CSS gốc CaramOS)
-            let primary_count =
-                copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
-            writeln!(
-                writer,
-                "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
-                primary_count,
-                self.config.includes_chroot_dir.display()
-            )
-            .map_err(|e| CaramCtlError::IoFailure {
-                context: "Ghi log overlay chính".to_string(),
-                path: None,
-                source: e,
-            })?;
 
             // 3. Kích hoạt Calamares branding CaramOS + đồng bộ Cinnamon theme/icon/applet thực tế
             if apply_calamares_caramos_branding(&self.rootfs_dir)? {
@@ -1640,6 +1647,7 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
             if !self.config.dry_run {
                 let icon_targets = [
                     format!("/usr/share/icons/{}", active_icon_theme),
+                    "/usr/share/icons/hicolor".to_string(),
                     "/usr/share/icons/Papirus".to_string(),
                     "/usr/share/icons/Tela-circle".to_string(),
                 ];
@@ -2411,7 +2419,7 @@ enum Commands {
         compression: SquashfsCompression,
         #[arg(long)]
         release: bool,
-        #[arg(long, default_value = "https://deb.debian.org/debian")]
+        #[arg(long, default_value = "http://deb.debian.org/debian")]
         mirror: String,
         #[arg(long)]
         keyring: Option<PathBuf>,
@@ -2627,7 +2635,7 @@ mod tests {
                 source: e,
             })?;
         assert!(dconf.contains("name='CaramOS-Light'"));
-        assert!(dconf.contains("gtk-theme='CaramOS-Light'"));
+        assert!(dconf.contains("panels-height=['1:52']"));
         assert!(dconf.contains("icon-theme='Tela-circle'"));
         Ok(())
     }
@@ -2668,7 +2676,7 @@ mod tests {
         let cfg = BuildConfig {
             arch: String::from("amd64"),
             compression: SquashfsCompression::Zstd,
-            mirror: String::from("https://deb.debian.org/debian"),
+            mirror: String::from("http://deb.debian.org/debian"),
             keyring: None,
             output_iso: work_dir.join(DEFAULT_ISO_FILENAME),
             work_dir: work_dir.clone(),
