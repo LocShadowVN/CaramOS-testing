@@ -13,17 +13,15 @@
 //! # CaramOS 2.0 Branding, 3-Island Dock Theme Stager & Atomic OTA TUI (`caramos-ui`)
 //!
 //! 1. `branding` (alias: `bootloader`): Tái sử dụng hình nền và logo CaramOS có sẵn để sinh
-//!    đồng bộ GRUB2, Plymouth (`FRAMEBUFFER=y`), LightDM, theme Cinnamon Island Dock 3 đảo
-//!    (`CaramOS-Island` / `CaramOS-Island-Dark`), cấu hình ứng dụng ghim taskbar, Calamares
-//!    branding và autostart cho App Center & Driver Check.
-//! 2. `live-desktop-icon`: Thay thế script `add-calamares-desktop-icon` của Debian bằng Rust
-//!    để đặt biểu tượng "Cài đặt CaramOS 2.0", Firefox, App Center & Driver Check ra Desktop.
-//! 3. `updater`: Trình cập nhật OTA TUI truyền luồng `O(1)` RAM, xác thực SHA-256 (`sha2`)
-//!    và Rollback nguyên tử (`tempfile`).
+//!    đồng bộ GRUB2 (khung kính tối 9-slice + thanh chọn Sage nổi bật không đè logo), Plymouth
+//!    (`FRAMEBUFFER=y`), LightDM, theme Cinnamon Island Dock 3 đảo nổi (`#panel.panel-bottom`),
+//!    biểu tượng Start Menu logo CaramOS, Calamares branding và phím tắt Desktop.
+//! 2. `live-desktop-icon`: Đồng bộ biểu tượng "Cài đặt CaramOS 2.0", Firefox, App Center & Driver Check.
+//! 3. `updater`: Trình cập nhật OTA TUI truyền luồng `O(1)` RAM, xác thực SHA-256 (`sha2`) & Rollback.
 
 use clap::{Parser, Subcommand};
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::OsString;
@@ -63,7 +61,7 @@ pub enum CaramUiError {
     #[error("[ASSET_ERR] Không tìm thấy hình nền có sẵn trong '{}'. Không tự tạo hình nền giả; hãy truyền --wallpaper <FILE> hoặc bổ sung ảnh vào thư mục backgrounds.", search_dir.display())]
     WallpaperNotFound { search_dir: PathBuf },
 
-    #[error("[IMAGE_ERR] Không thể đọc/chuẩn hóa ảnh nền có sẵn '{}': {reason}", path.display())]
+    #[error("[IMAGE_ERR] Không thể đọc/chuẩn hóa ảnh '{}': {reason}", path.display())]
     ImageProcessingFailed { path: PathBuf, reason: String },
 
     #[error("[IO_ERR] Thao tác '{context}'{} thất bại: {source}", fmt_opt_path(path))]
@@ -220,6 +218,142 @@ fn atomic_write_bytes(target_path: &Path, content: &[u8]) -> Result<(), CaramUiE
     atomic_write_bytes_with_mode(target_path, content, 0o644)
 }
 
+fn save_dynamic_png_atomic(image: &DynamicImage, dst_png: &Path) -> Result<(), CaramUiError> {
+    let parent = dst_png
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| CaramUiError::IoFailure {
+        context: "Tạo thư mục đích ảnh PNG".to_string(),
+        path: Some(parent.to_path_buf()),
+        source: e,
+    })?;
+
+    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| CaramUiError::IoFailure {
+        context: "Tạo tệp tạm PNG".to_string(),
+        path: Some(parent.to_path_buf()),
+        source: e,
+    })?;
+    let tmp_path = tmp.path().to_path_buf();
+
+    {
+        let mut buf_writer = BufWriter::new(tmp.as_file_mut());
+        image
+            .write_to(&mut buf_writer, ImageFormat::Png)
+            .map_err(|e| CaramUiError::ImageProcessingFailed {
+                path: dst_png.to_path_buf(),
+                reason: e.to_string(),
+            })?;
+        buf_writer.flush().map_err(|e| CaramUiError::IoFailure {
+            context: "Xả bộ đệm PNG".to_string(),
+            path: Some(tmp_path.clone()),
+            source: e,
+        })?;
+    }
+
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| CaramUiError::IoFailure {
+            context: "Đồng bộ fsync PNG".to_string(),
+            path: Some(tmp_path),
+            source: e,
+        })?;
+    set_unix_mode(tmp.path(), 0o644)?;
+
+    tmp.persist(dst_png).map_err(|e| CaramUiError::IoFailure {
+        context: "Lưu nguyên tử ảnh PNG".to_string(),
+        path: Some(dst_png.to_path_buf()),
+        source: e.error,
+    })?;
+    Ok(())
+}
+
+/// Sinh 9 mảnh PNG viền khung bán trong suốt chuẩn GRUB2 `*_pixmap_style` (chỉ là khung UI, không sinh hình nền).
+fn write_grub_nine_slice(
+    dir: &Path,
+    prefix: &str,
+    fill: Rgba<u8>,
+    border: Rgba<u8>,
+) -> Result<(), CaramUiError> {
+    let transparent = Rgba([0, 0, 0, 0]);
+    let s: u32 = 8;
+    let last = s - 1;
+
+    let pieces: [(&str, RgbaImage); 9] = [
+        ("c", RgbaImage::from_pixel(s, s, fill)),
+        (
+            "n",
+            RgbaImage::from_fn(s, s, |_, y| if y == 0 { border } else { fill }),
+        ),
+        (
+            "s",
+            RgbaImage::from_fn(s, s, |_, y| if y == last { border } else { fill }),
+        ),
+        (
+            "w",
+            RgbaImage::from_fn(s, s, |x, _| if x == 0 { border } else { fill }),
+        ),
+        (
+            "e",
+            RgbaImage::from_fn(s, s, |x, _| if x == last { border } else { fill }),
+        ),
+        (
+            "nw",
+            RgbaImage::from_fn(s, s, |x, y| {
+                if x == 0 && y == 0 {
+                    transparent
+                } else if x == 0 || y == 0 || (x == 1 && y == 1) {
+                    border
+                } else {
+                    fill
+                }
+            }),
+        ),
+        (
+            "ne",
+            RgbaImage::from_fn(s, s, |x, y| {
+                if x == last && y == 0 {
+                    transparent
+                } else if x == last || y == 0 || (x == last - 1 && y == 1) {
+                    border
+                } else {
+                    fill
+                }
+            }),
+        ),
+        (
+            "sw",
+            RgbaImage::from_fn(s, s, |x, y| {
+                if x == 0 && y == last {
+                    transparent
+                } else if x == 0 || y == last || (x == 1 && y == last - 1) {
+                    border
+                } else {
+                    fill
+                }
+            }),
+        ),
+        (
+            "se",
+            RgbaImage::from_fn(s, s, |x, y| {
+                if x == last && y == last {
+                    transparent
+                } else if x == last || y == last || (x == last - 1 && y == last - 1) {
+                    border
+                } else {
+                    fill
+                }
+            }),
+        ),
+    ];
+
+    for (suffix, img) in pieces {
+        let dst = dir.join(format!("{}_{}.png", prefix, suffix));
+        save_dynamic_png_atomic(&DynamicImage::ImageRgba8(img), &dst)?;
+    }
+    Ok(())
+}
+
 fn is_supported_wallpaper_ext(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
@@ -230,7 +364,6 @@ fn is_supported_wallpaper_ext(path: &Path) -> bool {
     )
 }
 
-/// Tìm hình nền có sẵn của CaramOS — ưu tiên hình nền phong cảnh/Indigo/Sage, tránh ảnh logo nhỏ.
 pub fn discover_existing_wallpaper(
     explicit_wallpaper: Option<&Path>,
     search_dir: &Path,
@@ -325,59 +458,27 @@ fn stage_existing_image_png(
         decoded.resize_to_fill(target_w, target_h, FilterType::Lanczos3)
     };
     let rgb_image = DynamicImage::ImageRgb8(fitted.to_rgb8());
+    save_dynamic_png_atomic(&rgb_image, dst_png)
+}
 
-    let parent = dst_png
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| CaramUiError::IoFailure {
-        context: "Tạo thư mục đích ảnh PNG".to_string(),
-        path: Some(parent.to_path_buf()),
-        source: e,
-    })?;
-
-    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| CaramUiError::IoFailure {
-        context: "Tạo tệp tạm PNG".to_string(),
-        path: Some(parent.to_path_buf()),
-        source: e,
-    })?;
-    let tmp_path = tmp.path().to_path_buf();
-
-    {
-        let mut buf_writer = BufWriter::new(tmp.as_file_mut());
-        rgb_image
-            .write_to(&mut buf_writer, ImageFormat::Png)
-            .map_err(|e| CaramUiError::ImageProcessingFailed {
-                path: dst_png.to_path_buf(),
-                reason: e.to_string(),
-            })?;
-        buf_writer.flush().map_err(|e| CaramUiError::IoFailure {
-            context: "Xả bộ đệm PNG".to_string(),
-            path: Some(tmp_path.clone()),
+fn copy_logo_to_target(src: &Path, dst: &Path) -> Result<(), CaramUiError> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| CaramUiError::IoFailure {
+            context: "Tạo thư mục cha cho logo CaramOS".to_string(),
+            path: Some(parent.to_path_buf()),
             source: e,
         })?;
     }
-
-    tmp.as_file()
-        .sync_all()
-        .map_err(|e| CaramUiError::IoFailure {
-            context: "Đồng bộ fsync PNG".to_string(),
-            path: Some(tmp_path),
-            source: e,
-        })?;
-    set_unix_mode(tmp.path(), 0o644)?;
-
-    tmp.persist(dst_png).map_err(|e| CaramUiError::IoFailure {
-        context: "Lưu nguyên tử ảnh PNG".to_string(),
-        path: Some(dst_png.to_path_buf()),
-        source: e.error,
+    fs::copy(src, dst).map_err(|e| CaramUiError::IoFailure {
+        context: "Sao chép logo CaramOS".to_string(),
+        path: Some(dst.to_path_buf()),
+        source: e,
     })?;
-
-    Ok(())
+    set_unix_mode(dst, 0o644)
 }
 
 // ============================================================================
-// 4. ĐỒNG BỘ BRANDING CARAMOS (GRUB2 + PLYMOUTH + LIGHTDM + 3-ISLAND DOCK + CALAMARES)
+// 4. ĐỒNG BỘ BRANDING CARAMOS (GRUB2 9-SLICE + PLYMOUTH + LIGHTDM + 3-ISLAND DOCK)
 // ============================================================================
 
 pub struct BrandingStageConfig<'a> {
@@ -408,6 +509,8 @@ pub fn build_caramos_branding_overlay<W: Write>(
     let applications_dir = cfg.output_root.join("usr/share/applications");
     let autostart_dir = cfg.output_root.join("etc/xdg/autostart");
     let pixmaps_dir = cfg.output_root.join("usr/share/pixmaps");
+    let hicolor_apps_dir = cfg.output_root.join("usr/share/icons/hicolor/256x256/apps");
+    let caramos_share_dir = cfg.output_root.join("usr/share/caramos");
     let island_light_dir = cfg.output_root.join("usr/share/themes/CaramOS-Island/cinnamon");
     let island_dark_dir = cfg
         .output_root
@@ -424,6 +527,8 @@ pub fn build_caramos_branding_overlay<W: Write>(
         &applications_dir,
         &autostart_dir,
         &pixmaps_dir,
+        &hicolor_apps_dir,
+        &caramos_share_dir,
         &island_light_dir,
         &island_dark_dir,
         &skel_spices_dir,
@@ -440,20 +545,10 @@ pub fn build_caramos_branding_overlay<W: Write>(
     stage_existing_image_png(&source_wallpaper, &grub_bg_path, cfg.width, cfg.height)?;
 
     let plymouth_bg_path = plymouth_dir.join("background.png");
-    fs::copy(&grub_bg_path, &plymouth_bg_path).map_err(|e| CaramUiError::IoFailure {
-        context: "Sao chép ảnh nền sang Plymouth theme".to_string(),
-        path: Some(plymouth_bg_path.clone()),
-        source: e,
-    })?;
-    set_unix_mode(&plymouth_bg_path, 0o644)?;
+    copy_logo_to_target(&grub_bg_path, &plymouth_bg_path)?;
 
     let login_bg_path = login_bg_dir.join("caramos-login.png");
-    fs::copy(&grub_bg_path, &login_bg_path).map_err(|e| CaramUiError::IoFailure {
-        context: "Sao chép hình nền sang LightDM".to_string(),
-        path: Some(login_bg_path.clone()),
-        source: e,
-    })?;
-    set_unix_mode(&login_bg_path, 0o644)?;
+    copy_logo_to_target(&grub_bg_path, &login_bg_path)?;
 
     // 2. Cấu hình LightDM: tự động vào phiên Cinnamon Live & áp hình nền + logo CaramOS
     let lightdm_session_conf = r#"[Seat:*]
@@ -468,12 +563,12 @@ autologin-session=cinnamon
 
     let lightdm_greeter_conf = r#"[greeter]
 background=/usr/share/backgrounds/caramos-login.png
-default-user-image=/usr/share/pixmaps/install-debian.png
+default-user-image=/usr/share/pixmaps/caramos-logo.png
 theme-name=Arc
 icon-theme-name=Papirus
 cursor-theme-name=breeze_cursors
 font-name=Be Vietnam Pro 11
-clock-format=%a, %H:%M
+clock-format=%H:%M  %d/%m
 "#;
     atomic_write_bytes(
         &cfg.output_root
@@ -481,85 +576,91 @@ clock-format=%a, %H:%M
         lightdm_greeter_conf.as_bytes(),
     )?;
 
-    // 3. Ảnh Calamares & Logo chính thức
+    // 3. Ảnh Calamares & cài logo CaramOS vào đầy đủ mọi đường dẫn chuẩn (không bao giờ lỗi icon Start Menu)
     let calamares_welcome_path = calamares_brand_dir.join("welcome.png");
     stage_existing_image_png(&source_wallpaper, &calamares_welcome_path, 800, 450)?;
 
     let logo_src = cfg.assets_dir.join("CaramOS_logo.png");
     let calamares_logo_path = calamares_brand_dir.join("logo.png");
     let has_logo = if logo_src.is_file() {
-        let plymouth_logo = plymouth_dir.join("logo.png");
-        fs::copy(&logo_src, &plymouth_logo).map_err(|e| CaramUiError::IoFailure {
-            context: "Sao chép logo CaramOS sang Plymouth".to_string(),
-            path: Some(plymouth_logo.clone()),
-            source: e,
-        })?;
-        set_unix_mode(&plymouth_logo, 0o644)?;
-
-        fs::copy(&logo_src, &calamares_logo_path).map_err(|e| CaramUiError::IoFailure {
-            context: "Sao chép logo CaramOS sang Calamares branding".to_string(),
-            path: Some(calamares_logo_path.clone()),
-            source: e,
-        })?;
-        set_unix_mode(&calamares_logo_path, 0o644)?;
-
-        let desktop_icon = pixmaps_dir.join("install-debian.png");
-        fs::copy(&logo_src, &desktop_icon).map_err(|e| CaramUiError::IoFailure {
-            context: "Cập nhật biểu tượng Calamares sang logo CaramOS".to_string(),
-            path: Some(desktop_icon.clone()),
-            source: e,
-        })?;
-        set_unix_mode(&desktop_icon, 0o644)?;
+        for dst in [
+            plymouth_dir.join("logo.png"),
+            calamares_logo_path.clone(),
+            pixmaps_dir.join("caramos-logo.png"),
+            pixmaps_dir.join("caramos.png"),
+            pixmaps_dir.join("install-debian.png"),
+            hicolor_apps_dir.join("caramos-logo.png"),
+            hicolor_apps_dir.join("caramos.png"),
+            caramos_share_dir.join("logo.png"),
+        ] {
+            copy_logo_to_target(&logo_src, &dst)?;
+        }
         true
     } else {
         stage_existing_image_png(&source_wallpaper, &calamares_logo_path, 128, 128)?;
+        copy_logo_to_target(&calamares_logo_path, &pixmaps_dir.join("caramos-logo.png"))?;
+        copy_logo_to_target(&calamares_logo_path, &pixmaps_dir.join("install-debian.png"))?;
         false
     };
 
-    // 4. Theme Cinnamon Island Dock 3 đảo nổi đặc trưng CaramOS (Sáng Sage Mist + Tối Indigo Night)
+    // 4. Theme Cinnamon Island Dock 3 đảo nổi — dùng #panel.panel-bottom để thắng độ ưu tiên #panel của Arc!
     let island_light_css = r##"@import url("/usr/share/themes/Arc/cinnamon/cinnamon.css");
 
-/* CaramOS Island Dock — Thanh tác vụ 3 đảo nổi (Sage Mist Light) */
+/* CaramOS Island Dock — 3 đảo nổi độc lập (Sage Mist Light) */
 stage {
     font-family: "Be Vietnam Pro", "Noto Sans", sans-serif;
 }
 
-.panel-bottom {
-    background-color: transparent;
-    box-shadow: none;
+#panel,
+#panel.panel-bottom,
+#panel.panel-top {
+    background-color: rgba(0, 0, 0, 0);
+    background-gradient-direction: none;
     border: none;
-    height: 48px;
-    padding: 0 10px 6px 10px;
+    box-shadow: none;
+    height: 52px;
+    padding: 0;
 }
 
-.panel-bottom .panelLeft,
-.panel-bottom .panelCenter,
-.panel-bottom .panelRight {
-    background-color: rgba(247, 250, 248, 0.90);
+#panel.panel-bottom .panelLeft,
+#panel.panel-bottom .panelCenter,
+#panel.panel-bottom .panelRight {
+    background-color: rgba(248, 251, 249, 0.92);
     color: #1B2B23;
     border-radius: 16px;
-    border: 1px solid rgba(46, 125, 91, 0.24);
-    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.16);
+    border: 1px solid rgba(46, 125, 91, 0.28);
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.18);
+    margin: 4px 8px 6px 8px;
     padding: 0 10px;
-    margin: 2px 6px;
 }
 
-.panel-bottom .applet-box,
-.panel-bottom .grouped-window-list-item-box {
+#panel.panel-bottom .panelLeft {
+    margin-left: 12px;
+}
+
+#panel.panel-bottom .panelRight {
+    margin-right: 12px;
+    padding: 0 12px;
+}
+
+#panel.panel-bottom .applet-box,
+#panel.panel-bottom .grouped-window-list-item-box {
     color: #1B2B23;
+    background-color: rgba(0, 0, 0, 0);
+    border: none;
     border-radius: 12px;
     margin: 3px 2px;
-    padding: 0 6px;
+    padding: 0 7px;
     transition-duration: 150ms;
 }
 
-.panel-bottom .applet-box:hover,
-.panel-bottom .grouped-window-list-item-box:hover {
-    background-color: rgba(46, 125, 91, 0.14);
+#panel.panel-bottom .applet-box:hover,
+#panel.panel-bottom .grouped-window-list-item-box:hover {
+    background-color: rgba(46, 125, 91, 0.15);
 }
 
-.panel-bottom .grouped-window-list-item-box:active,
-.panel-bottom .grouped-window-list-item-box:checked {
+#panel.panel-bottom .grouped-window-list-item-box:active,
+#panel.panel-bottom .grouped-window-list-item-box:checked {
     background-color: rgba(46, 125, 91, 0.20);
     box-shadow: inset 0 -3px 0 0 #2E7D5B;
 }
@@ -567,7 +668,7 @@ stage {
 .menu {
     background-color: rgba(248, 251, 249, 0.96);
     border-radius: 16px;
-    border: 1px solid rgba(46, 125, 91, 0.22);
+    border: 1px solid rgba(46, 125, 91, 0.24);
     box-shadow: 0 8px 28px rgba(15, 23, 42, 0.22);
 }
 "##;
@@ -575,47 +676,61 @@ stage {
 
     let island_dark_css = r##"@import url("/usr/share/themes/Arc-Dark/cinnamon/cinnamon.css");
 
-/* CaramOS Island Dock — Thanh tác vụ 3 đảo nổi (Indigo Night Dark) */
+/* CaramOS Island Dock — 3 đảo nổi độc lập (Indigo Night Dark) */
 stage {
     font-family: "Be Vietnam Pro", "Noto Sans", sans-serif;
 }
 
-.panel-bottom {
-    background-color: transparent;
-    box-shadow: none;
+#panel,
+#panel.panel-bottom,
+#panel.panel-top {
+    background-color: rgba(0, 0, 0, 0);
+    background-gradient-direction: none;
     border: none;
-    height: 48px;
-    padding: 0 10px 6px 10px;
+    box-shadow: none;
+    height: 52px;
+    padding: 0;
 }
 
-.panel-bottom .panelLeft,
-.panel-bottom .panelCenter,
-.panel-bottom .panelRight {
-    background-color: rgba(20, 24, 36, 0.88);
+#panel.panel-bottom .panelLeft,
+#panel.panel-bottom .panelCenter,
+#panel.panel-bottom .panelRight {
+    background-color: rgba(20, 24, 36, 0.90);
     color: #ECF1FF;
     border-radius: 16px;
-    border: 1px solid rgba(124, 155, 255, 0.28);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.36);
+    border: 1px solid rgba(124, 155, 255, 0.30);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.38);
+    margin: 4px 8px 6px 8px;
     padding: 0 10px;
-    margin: 2px 6px;
 }
 
-.panel-bottom .applet-box,
-.panel-bottom .grouped-window-list-item-box {
+#panel.panel-bottom .panelLeft {
+    margin-left: 12px;
+}
+
+#panel.panel-bottom .panelRight {
+    margin-right: 12px;
+    padding: 0 12px;
+}
+
+#panel.panel-bottom .applet-box,
+#panel.panel-bottom .grouped-window-list-item-box {
     color: #ECF1FF;
+    background-color: rgba(0, 0, 0, 0);
+    border: none;
     border-radius: 12px;
     margin: 3px 2px;
-    padding: 0 6px;
+    padding: 0 7px;
     transition-duration: 150ms;
 }
 
-.panel-bottom .applet-box:hover,
-.panel-bottom .grouped-window-list-item-box:hover {
+#panel.panel-bottom .applet-box:hover,
+#panel.panel-bottom .grouped-window-list-item-box:hover {
     background-color: rgba(56, 189, 248, 0.16);
 }
 
-.panel-bottom .grouped-window-list-item-box:active,
-.panel-bottom .grouped-window-list-item-box:checked {
+#panel.panel-bottom .grouped-window-list-item-box:active,
+#panel.panel-bottom .grouped-window-list-item-box:checked {
     background-color: rgba(56, 189, 248, 0.24);
     box-shadow: inset 0 -3px 0 0 #38BDF8;
 }
@@ -629,8 +744,13 @@ stage {
 "##;
     atomic_write_bytes(&island_dark_dir.join("cinnamon.css"), island_dark_css.as_bytes())?;
 
-    // 5. Cấu hình Spices mặc định: Nút Menu logo CaramOS ở đảo trái + Ghim sẵn 5 app ở đảo giữa
+    // 5. Cấu hình Spices: Đảo trái (Menu logo CaramOS chuẩn Cinnamon 6.4), Đảo giữa (5 app ghim), Đảo phải (đồng hồ gọn)
     let menu_applet_json = r#"{
+    "menu-custom": {
+        "type": "switch",
+        "default": false,
+        "value": true
+    },
     "menu-icon-custom": {
         "type": "switch",
         "default": false,
@@ -639,17 +759,26 @@ stage {
     "menu-icon": {
         "type": "iconfilechooser",
         "default": "cinnamon-symbolic",
-        "value": "/usr/share/pixmaps/install-debian.png"
+        "value": "/usr/share/pixmaps/caramos-logo.png"
+    },
+    "menu-icon-size": {
+        "type": "spinbutton",
+        "default": 24,
+        "value": 26
     },
     "menu-label": {
         "type": "entry",
         "default": "Menu",
-        "value": "CaramOS"
+        "value": ""
     }
 }
 "#;
     atomic_write_bytes(
         &skel_spices_dir.join("menu@cinnamon.org/0.json"),
+        menu_applet_json.as_bytes(),
+    )?;
+    atomic_write_bytes(
+        &skel_spices_dir.join("Cinnamenu@json/0.json"),
         menu_applet_json.as_bytes(),
     )?;
 
@@ -678,59 +807,83 @@ stage {
         pinned_apps_json.as_bytes(),
     )?;
 
-    // 6. Cấu hình GRUB2 (tái sử dụng hình nền có sẵn, bố cục thoáng rõ)
-    let grub_theme_txt = r##"# CaramOS Official GRUB2 Bootloader Theme
-# Reuses existing CaramOS wallpaper & neutral Indigo Night / Sage Mist palette
+    let calendar_applet_json = r#"{
+    "use-custom-format": {
+        "type": "switch",
+        "default": false,
+        "value": true
+    },
+    "custom-format": {
+        "type": "entry",
+        "default": "%A, %B %e, %H:%M",
+        "value": "%H:%M  %d/%m"
+    }
+}
+"#;
+    atomic_write_bytes(
+        &skel_spices_dir.join("calendar@cinnamon.org/7.json"),
+        calendar_applet_json.as_bytes(),
+    )?;
+
+    // 6. GRUB2 Theme tái thiết kế: giữ nguyên background.png từ hình nền có sẵn,
+    // đặt menu ở nửa dưới (top = 58%) trong thẻ kính tối 9-slice + thanh chọn Sage nổi bật (chữ luôn rõ 100%)
+    write_grub_nine_slice(
+        &grub_theme_dir,
+        "menu",
+        Rgba([15, 23, 42, 224]),
+        Rgba([148, 163, 184, 130]),
+    )?;
+    write_grub_nine_slice(
+        &grub_theme_dir,
+        "select",
+        Rgba([46, 125, 91, 240]),
+        Rgba([110, 231, 183, 210]),
+    )?;
+
+    let grub_theme_txt = r##"# CaramOS 2.0 GRUB2 Bootloader Theme
+# Reuses existing CaramOS wallpaper; translucent dark glass card at bottom avoids overlapping center artwork
 
 title-text: ""
 desktop-image: "background.png"
 desktop-color: "#0F172A"
 
-+ label {
-    top = 8%
-    left = 10%
-    width = 80%
-    height = 36
-    text = "CaramOS 2.0  |  Debian 13 (Trixie)"
-    color = "#F8FAFC"
-    align = "center"
-}
-
 + boot_menu {
-    left = 20%
-    top = 24%
-    width = 60%
-    height = 42%
+    left = 18%
+    top = 58%
+    width = 64%
+    height = 22%
+    menu_pixmap_style = "menu_*.png"
+    selected_item_pixmap_style = "select_*.png"
     item_color = "#E2E8F0"
-    selected_item_color = "#38BDF8"
+    selected_item_color = "#FFFFFF"
     item_height = 38
-    item_padding = 12
-    item_spacing = 10
-    scrollbar = true
-    scrollbar_width = 6
-    scrollbar_thumb = "#38BDF8"
+    item_padding = 14
+    item_spacing = 8
+    icon_width = 0
+    icon_height = 0
+    scrollbar = false
 }
 
 + progress_bar {
     id = "__timeout__"
-    left = 20%
-    top = 80%
-    width = 60%
+    left = 18%
+    top = 83%
+    width = 64%
     height = 20
-    fg_color = "#38BDF8"
-    bg_color = "#1E293B"
+    fg_color = "#2E7D5B"
+    bg_color = "#0F172A"
     border_color = "#64748B"
     text_color = "#F8FAFC"
     text = "@TIMEOUT_NOTIFICATION_LONG@"
 }
 
 + label {
-    top = 89%
+    top = 90%
     left = 10%
     width = 80%
     height = 24
     text = "[↑/↓] Chọn hệ thống   |   [Enter] Khởi động   |   [E] Chỉnh tham số"
-    color = "#CBD5E1"
+    color = "#F8FAFC"
     align = "center"
 }
 "##;
@@ -1026,7 +1179,7 @@ userShell: /bin/bash
         calamares_users_conf.as_bytes(),
     )?;
 
-    // 9. Phím tắt ứng dụng & thay thế autostart add-calamares-desktop-icon bằng Rust
+    // 9. Phím tắt ứng dụng & autostart
     let calamares_desktop = r#"[Desktop Entry]
 Type=Application
 Version=1.0
@@ -1035,7 +1188,7 @@ Name[en]=Install CaramOS 2.0
 GenericName=Trình Cài đặt Hệ điều hành
 Comment=Cài đặt hệ điều hành CaramOS 2.0 lên máy tính (Calamares)
 Exec=/usr/bin/install-debian
-Icon=install-debian
+Icon=caramos-logo
 Terminal=false
 StartupNotify=true
 Categories=System;Settings;
@@ -1051,7 +1204,7 @@ Type=Application
 Version=1.0
 Name=CaramOS Desktop Shortcuts Sync
 Exec=/usr/local/bin/caramos-ui live-desktop-icon
-Icon=install-debian
+Icon=caramos-logo
 Terminal=false
 X-GNOME-Autostart-enabled=true
 "#;
@@ -1141,7 +1294,7 @@ Categories=System;Settings;
 
     writeln!(
         writer,
-        "{}{}✔ Đã đồng bộ trọn bộ CaramOS (GRUB2, Plymouth, LightDM, Island Dock 3 đảo, Calamares & Phím tắt Desktop):{}",
+        "{}{}✔ Đã đồng bộ trọn bộ CaramOS (GRUB2 9-slice, Plymouth, LightDM, Island Dock 3 đảo, Logo Menu & Calamares):{}",
         ANSI_BOLD, ANSI_SAGE, ANSI_RESET
     )
     .map_err(|e| CaramUiError::IoFailure {
@@ -1175,7 +1328,7 @@ Categories=System;Settings;
 }
 
 // ============================================================================
-// 5. ĐỒNG BỘ BIỂU TƯỢNG DESKTOP (`live-desktop-icon`, THAY SCRIPT DEBIAN)
+// 5. ĐỒNG BỘ BIỂU TƯỢNG DESKTOP (`live-desktop-icon`)
 // ============================================================================
 
 fn resolve_user_desktop_dir() -> PathBuf {
@@ -1201,7 +1354,6 @@ fn sync_desktop_shortcuts() -> Result<(), CaramUiError> {
         source: e,
     })?;
 
-    // Gỡ biểu tượng "Install Debian" cũ nếu từng tồn tại
     let legacy_debian_icon = desktop_dir.join("install-debian.desktop");
     if legacy_debian_icon.exists() {
         let _ = fs::remove_file(&legacy_debian_icon);
@@ -1219,7 +1371,6 @@ fn sync_desktop_shortcuts() -> Result<(), CaramUiError> {
         let _ = fs::remove_file(&caramos_install_dst);
     }
 
-    // Đặt sẵn biểu tượng Firefox, App Center & Driver Check ra Desktop 1 lần duy nhất
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -1566,7 +1717,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Chuẩn bị giao diện GRUB2, Plymouth, LightDM, Island Dock 3 đảo & Calamares Branding
+    /// Chuẩn bị giao diện GRUB2 9-slice, Plymouth, LightDM, Island Dock 3 đảo & Calamares Branding
     #[command(alias = "bootloader")]
     Branding {
         #[arg(long, default_value = "./build/ui_overlay")]
@@ -1743,7 +1894,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_branding_stages_island_dock_lightdm_and_calamares() -> Result<(), CaramUiError> {
+    fn test_branding_stages_island_dock_grub_slices_and_menu_logo() -> Result<(), CaramUiError> {
         let temp_base = TempDir::new().map_err(|e| CaramUiError::IoFailure {
             context: "Tạo TempDir test branding".to_string(),
             path: None,
@@ -1782,20 +1933,22 @@ mod tests {
         };
         let _ = build_caramos_branding_overlay(&cfg, &mut log)?;
 
+        let css = fs::read_to_string(
+            out_dir.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"),
+        )
+        .map_err(|e| CaramUiError::IoFailure {
+            context: "Đọc CaramOS-Island CSS".to_string(),
+            path: None,
+            source: e,
+        })?;
+        assert!(css.contains("#panel.panel-bottom"));
+        assert!(out_dir.join("boot/grub/themes/caramos/menu_c.png").is_file());
         assert!(out_dir
-            .join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css")
+            .join("boot/grub/themes/caramos/select_c.png")
             .is_file());
+        assert!(out_dir.join("usr/share/pixmaps/caramos-logo.png").is_file());
         assert!(out_dir
-            .join("etc/lightdm/lightdm-gtk-greeter.conf.d/50-caramos.conf")
-            .is_file());
-        assert!(out_dir
-            .join("etc/skel/.config/cinnamon/spices/grouped-window-list@cinnamon.org/1.json")
-            .is_file());
-        assert!(out_dir
-            .join("etc/initramfs-tools/conf.d/caramos-plymouth")
-            .is_file());
-        assert!(out_dir
-            .join("etc/xdg/autostart/calamares-desktop-icon.desktop")
+            .join("etc/skel/.config/cinnamon/spices/calendar@cinnamon.org/7.json")
             .is_file());
 
         Ok(())
