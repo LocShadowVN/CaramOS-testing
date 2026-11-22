@@ -10,13 +10,15 @@
     unused_must_use
 )]
 
-//! # CaramOS 2.0 Branding Asset Stager & Atomic OTA TUI (`caramos-ui`)
+//! # CaramOS 2.0 Branding, 3-Island Dock Theme Stager & Atomic OTA TUI (`caramos-ui`)
 //!
-//! 1. `branding` (alias: `bootloader`): Tái sử dụng trực tiếp hình nền có sẵn trong
-//!    `config/includes.chroot/usr/share/backgrounds/` và `assets/CaramOS_logo.png` cho
-//!    GRUB2, Plymouth, Calamares GUI và sinh các tệp `.desktop` / `autostart` cho
-//!    `caramos-app-center` & `caramos-driver-check`.
-//! 2. `updater`: Trình cập nhật OTA TUI truyền luồng `O(1)` RAM, xác thực SHA-256 (`sha2`)
+//! 1. `branding` (alias: `bootloader`): Tái sử dụng hình nền và logo CaramOS có sẵn để sinh
+//!    đồng bộ GRUB2, Plymouth (`FRAMEBUFFER=y`), LightDM, theme Cinnamon Island Dock 3 đảo
+//!    (`CaramOS-Island` / `CaramOS-Island-Dark`), cấu hình ứng dụng ghim taskbar, Calamares
+//!    branding và autostart cho App Center & Driver Check.
+//! 2. `live-desktop-icon`: Thay thế script `add-calamares-desktop-icon` của Debian bằng Rust
+//!    để đặt biểu tượng "Cài đặt CaramOS 2.0", Firefox, App Center & Driver Check ra Desktop.
+//! 3. `updater`: Trình cập nhật OTA TUI truyền luồng `O(1)` RAM, xác thực SHA-256 (`sha2`)
 //!    và Rollback nguyên tử (`tempfile`).
 
 use clap::{Parser, Subcommand};
@@ -28,7 +30,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use walkdir::WalkDir;
@@ -169,7 +171,11 @@ fn set_unix_mode(_path: &Path, _mode: u32) -> Result<(), CaramUiError> {
     Ok(())
 }
 
-fn atomic_write_bytes(target_path: &Path, content: &[u8]) -> Result<(), CaramUiError> {
+fn atomic_write_bytes_with_mode(
+    target_path: &Path,
+    content: &[u8],
+    mode: u32,
+) -> Result<(), CaramUiError> {
     validate_safe_path(target_path)?;
     let parent = target_path
         .parent()
@@ -200,7 +206,7 @@ fn atomic_write_bytes(target_path: &Path, content: &[u8]) -> Result<(), CaramUiE
             path: Some(tmp_path),
             source: e,
         })?;
-    set_unix_mode(tmp.path(), 0o644)?;
+    set_unix_mode(tmp.path(), mode)?;
 
     tmp.persist(target_path).map_err(|e| CaramUiError::IoFailure {
         context: "Hoán đổi nguyên tử tệp đích".to_string(),
@@ -208,6 +214,10 @@ fn atomic_write_bytes(target_path: &Path, content: &[u8]) -> Result<(), CaramUiE
         source: e.error,
     })?;
     Ok(())
+}
+
+fn atomic_write_bytes(target_path: &Path, content: &[u8]) -> Result<(), CaramUiError> {
+    atomic_write_bytes_with_mode(target_path, content, 0o644)
 }
 
 fn is_supported_wallpaper_ext(path: &Path) -> bool {
@@ -220,6 +230,7 @@ fn is_supported_wallpaper_ext(path: &Path) -> bool {
     )
 }
 
+/// Tìm hình nền có sẵn của CaramOS — ưu tiên hình nền phong cảnh/Indigo/Sage, tránh ảnh logo nhỏ.
 pub fn discover_existing_wallpaper(
     explicit_wallpaper: Option<&Path>,
     search_dir: &Path,
@@ -251,12 +262,14 @@ pub fn discover_existing_wallpaper(
 
     candidates.sort();
 
-    let preferred_keywords = ["indigo", "night", "dark", "caramos"];
+    let preferred_keywords = ["indigo", "night", "sage", "mist", "wallpaper", "dark", "caramos"];
     for kw in preferred_keywords {
         if let Some(found) = candidates.iter().find(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_ascii_lowercase().contains(kw))
-                .unwrap_or(false)
+            let lower = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            lower.contains(kw) && !lower.contains("logo") && !lower.contains("icon")
         }) {
             return Ok(found.clone());
         }
@@ -363,6 +376,10 @@ fn stage_existing_image_png(
     Ok(())
 }
 
+// ============================================================================
+// 4. ĐỒNG BỘ BRANDING CARAMOS (GRUB2 + PLYMOUTH + LIGHTDM + 3-ISLAND DOCK + CALAMARES)
+// ============================================================================
+
 pub struct BrandingStageConfig<'a> {
     pub output_root: &'a Path,
     pub explicit_wallpaper: Option<&'a Path>,
@@ -384,30 +401,41 @@ pub fn build_caramos_branding_overlay<W: Write>(
 
     let grub_theme_dir = cfg.output_root.join("boot/grub/themes/caramos");
     let plymouth_dir = cfg.output_root.join("usr/share/plymouth/themes/caramos");
+    let login_bg_dir = cfg.output_root.join("usr/share/backgrounds");
     let etc_default_dir = cfg.output_root.join("etc/default");
     let calamares_brand_dir = cfg.output_root.join("etc/calamares/branding/caramos");
     let calamares_modules_dir = cfg.output_root.join("etc/calamares/modules");
     let applications_dir = cfg.output_root.join("usr/share/applications");
     let autostart_dir = cfg.output_root.join("etc/xdg/autostart");
     let pixmaps_dir = cfg.output_root.join("usr/share/pixmaps");
+    let island_light_dir = cfg.output_root.join("usr/share/themes/CaramOS-Island/cinnamon");
+    let island_dark_dir = cfg
+        .output_root
+        .join("usr/share/themes/CaramOS-Island-Dark/cinnamon");
+    let skel_spices_dir = cfg.output_root.join("etc/skel/.config/cinnamon/spices");
 
     for dir in [
         &grub_theme_dir,
         &plymouth_dir,
+        &login_bg_dir,
         &etc_default_dir,
         &calamares_brand_dir,
         &calamares_modules_dir,
         &applications_dir,
         &autostart_dir,
         &pixmaps_dir,
+        &island_light_dir,
+        &island_dark_dir,
+        &skel_spices_dir,
     ] {
         fs::create_dir_all(dir).map_err(|e| CaramUiError::IoFailure {
-            context: "Tạo thư mục Branding GRUB2/Plymouth/Calamares".to_string(),
+            context: "Tạo thư mục Branding & Island Dock CaramOS".to_string(),
             path: Some(dir.clone()),
             source: e,
         })?;
     }
 
+    // 1. Hình nền GRUB2, Plymouth & LightDM từ hình nền có sẵn của CaramOS
     let grub_bg_path = grub_theme_dir.join("background.png");
     stage_existing_image_png(&source_wallpaper, &grub_bg_path, cfg.width, cfg.height)?;
 
@@ -419,6 +447,41 @@ pub fn build_caramos_branding_overlay<W: Write>(
     })?;
     set_unix_mode(&plymouth_bg_path, 0o644)?;
 
+    let login_bg_path = login_bg_dir.join("caramos-login.png");
+    fs::copy(&grub_bg_path, &login_bg_path).map_err(|e| CaramUiError::IoFailure {
+        context: "Sao chép hình nền sang LightDM".to_string(),
+        path: Some(login_bg_path.clone()),
+        source: e,
+    })?;
+    set_unix_mode(&login_bg_path, 0o644)?;
+
+    // 2. Cấu hình LightDM: tự động vào phiên Cinnamon Live & áp hình nền + logo CaramOS
+    let lightdm_session_conf = r#"[Seat:*]
+user-session=cinnamon
+autologin-session=cinnamon
+"#;
+    atomic_write_bytes(
+        &cfg.output_root
+            .join("etc/lightdm/lightdm.conf.d/50-caramos-session.conf"),
+        lightdm_session_conf.as_bytes(),
+    )?;
+
+    let lightdm_greeter_conf = r#"[greeter]
+background=/usr/share/backgrounds/caramos-login.png
+default-user-image=/usr/share/pixmaps/install-debian.png
+theme-name=Arc
+icon-theme-name=Papirus
+cursor-theme-name=breeze_cursors
+font-name=Be Vietnam Pro 11
+clock-format=%a, %H:%M
+"#;
+    atomic_write_bytes(
+        &cfg.output_root
+            .join("etc/lightdm/lightdm-gtk-greeter.conf.d/50-caramos.conf"),
+        lightdm_greeter_conf.as_bytes(),
+    )?;
+
+    // 3. Ảnh Calamares & Logo chính thức
     let calamares_welcome_path = calamares_brand_dir.join("welcome.png");
     stage_existing_image_png(&source_wallpaper, &calamares_welcome_path, 800, 450)?;
 
@@ -453,6 +516,169 @@ pub fn build_caramos_branding_overlay<W: Write>(
         false
     };
 
+    // 4. Theme Cinnamon Island Dock 3 đảo nổi đặc trưng CaramOS (Sáng Sage Mist + Tối Indigo Night)
+    let island_light_css = r##"@import url("/usr/share/themes/Arc/cinnamon/cinnamon.css");
+
+/* CaramOS Island Dock — Thanh tác vụ 3 đảo nổi (Sage Mist Light) */
+stage {
+    font-family: "Be Vietnam Pro", "Noto Sans", sans-serif;
+}
+
+.panel-bottom {
+    background-color: transparent;
+    box-shadow: none;
+    border: none;
+    height: 48px;
+    padding: 0 10px 6px 10px;
+}
+
+.panel-bottom .panelLeft,
+.panel-bottom .panelCenter,
+.panel-bottom .panelRight {
+    background-color: rgba(247, 250, 248, 0.90);
+    color: #1B2B23;
+    border-radius: 16px;
+    border: 1px solid rgba(46, 125, 91, 0.24);
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.16);
+    padding: 0 10px;
+    margin: 2px 6px;
+}
+
+.panel-bottom .applet-box,
+.panel-bottom .grouped-window-list-item-box {
+    color: #1B2B23;
+    border-radius: 12px;
+    margin: 3px 2px;
+    padding: 0 6px;
+    transition-duration: 150ms;
+}
+
+.panel-bottom .applet-box:hover,
+.panel-bottom .grouped-window-list-item-box:hover {
+    background-color: rgba(46, 125, 91, 0.14);
+}
+
+.panel-bottom .grouped-window-list-item-box:active,
+.panel-bottom .grouped-window-list-item-box:checked {
+    background-color: rgba(46, 125, 91, 0.20);
+    box-shadow: inset 0 -3px 0 0 #2E7D5B;
+}
+
+.menu {
+    background-color: rgba(248, 251, 249, 0.96);
+    border-radius: 16px;
+    border: 1px solid rgba(46, 125, 91, 0.22);
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.22);
+}
+"##;
+    atomic_write_bytes(&island_light_dir.join("cinnamon.css"), island_light_css.as_bytes())?;
+
+    let island_dark_css = r##"@import url("/usr/share/themes/Arc-Dark/cinnamon/cinnamon.css");
+
+/* CaramOS Island Dock — Thanh tác vụ 3 đảo nổi (Indigo Night Dark) */
+stage {
+    font-family: "Be Vietnam Pro", "Noto Sans", sans-serif;
+}
+
+.panel-bottom {
+    background-color: transparent;
+    box-shadow: none;
+    border: none;
+    height: 48px;
+    padding: 0 10px 6px 10px;
+}
+
+.panel-bottom .panelLeft,
+.panel-bottom .panelCenter,
+.panel-bottom .panelRight {
+    background-color: rgba(20, 24, 36, 0.88);
+    color: #ECF1FF;
+    border-radius: 16px;
+    border: 1px solid rgba(124, 155, 255, 0.28);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.36);
+    padding: 0 10px;
+    margin: 2px 6px;
+}
+
+.panel-bottom .applet-box,
+.panel-bottom .grouped-window-list-item-box {
+    color: #ECF1FF;
+    border-radius: 12px;
+    margin: 3px 2px;
+    padding: 0 6px;
+    transition-duration: 150ms;
+}
+
+.panel-bottom .applet-box:hover,
+.panel-bottom .grouped-window-list-item-box:hover {
+    background-color: rgba(56, 189, 248, 0.16);
+}
+
+.panel-bottom .grouped-window-list-item-box:active,
+.panel-bottom .grouped-window-list-item-box:checked {
+    background-color: rgba(56, 189, 248, 0.24);
+    box-shadow: inset 0 -3px 0 0 #38BDF8;
+}
+
+.menu {
+    background-color: rgba(20, 24, 36, 0.96);
+    border-radius: 16px;
+    border: 1px solid rgba(124, 155, 255, 0.25);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42);
+}
+"##;
+    atomic_write_bytes(&island_dark_dir.join("cinnamon.css"), island_dark_css.as_bytes())?;
+
+    // 5. Cấu hình Spices mặc định: Nút Menu logo CaramOS ở đảo trái + Ghim sẵn 5 app ở đảo giữa
+    let menu_applet_json = r#"{
+    "menu-icon-custom": {
+        "type": "switch",
+        "default": false,
+        "value": true
+    },
+    "menu-icon": {
+        "type": "iconfilechooser",
+        "default": "cinnamon-symbolic",
+        "value": "/usr/share/pixmaps/install-debian.png"
+    },
+    "menu-label": {
+        "type": "entry",
+        "default": "Menu",
+        "value": "CaramOS"
+    }
+}
+"#;
+    atomic_write_bytes(
+        &skel_spices_dir.join("menu@cinnamon.org/0.json"),
+        menu_applet_json.as_bytes(),
+    )?;
+
+    let pinned_apps_json = r#"{
+    "pinned-apps": {
+        "type": "generic",
+        "default": [
+            "firefox-esr.desktop",
+            "nemo.desktop",
+            "caramos-app-center.desktop",
+            "caramos-driver-check.desktop",
+            "org.gnome.Terminal.desktop"
+        ],
+        "value": [
+            "firefox-esr.desktop",
+            "nemo.desktop",
+            "caramos-app-center.desktop",
+            "caramos-driver-check.desktop",
+            "org.gnome.Terminal.desktop"
+        ]
+    }
+}
+"#;
+    atomic_write_bytes(
+        &skel_spices_dir.join("grouped-window-list@cinnamon.org/1.json"),
+        pinned_apps_json.as_bytes(),
+    )?;
+
+    // 6. Cấu hình GRUB2 (tái sử dụng hình nền có sẵn, bố cục thoáng rõ)
     let grub_theme_txt = r##"# CaramOS Official GRUB2 Bootloader Theme
 # Reuses existing CaramOS wallpaper & neutral Indigo Night / Sage Mist palette
 
@@ -461,7 +687,7 @@ desktop-image: "background.png"
 desktop-color: "#0F172A"
 
 + label {
-    top = 10%
+    top = 8%
     left = 10%
     width = 80%
     height = 36
@@ -471,15 +697,15 @@ desktop-color: "#0F172A"
 }
 
 + boot_menu {
-    left = 18%
-    top = 28%
-    width = 64%
-    height = 46%
-    item_color = "#CBD5E1"
+    left = 20%
+    top = 24%
+    width = 60%
+    height = 42%
+    item_color = "#E2E8F0"
     selected_item_color = "#38BDF8"
-    item_height = 32
-    item_padding = 8
-    item_spacing = 6
+    item_height = 38
+    item_padding = 12
+    item_spacing = 10
     scrollbar = true
     scrollbar_width = 6
     scrollbar_thumb = "#38BDF8"
@@ -487,13 +713,13 @@ desktop-color: "#0F172A"
 
 + progress_bar {
     id = "__timeout__"
-    left = 18%
+    left = 20%
     top = 80%
-    width = 64%
-    height = 18
+    width = 60%
+    height = 20
     fg_color = "#38BDF8"
     bg_color = "#1E293B"
-    border_color = "#475569"
+    border_color = "#64748B"
     text_color = "#F8FAFC"
     text = "@TIMEOUT_NOTIFICATION_LONG@"
 }
@@ -504,13 +730,14 @@ desktop-color: "#0F172A"
     width = 80%
     height = 24
     text = "[↑/↓] Chọn hệ thống   |   [Enter] Khởi động   |   [E] Chỉnh tham số"
-    color = "#94A3B8"
+    color = "#CBD5E1"
     align = "center"
 }
 "##;
     let theme_txt_path = grub_theme_dir.join("theme.txt");
     atomic_write_bytes(&theme_txt_path, grub_theme_txt.as_bytes())?;
 
+    // 7. Plymouth Boot Splash + bật FRAMEBUFFER=y trong initramfs
     let plymouth_conf = r#"[Plymouth Theme]
 Name=CaramOS Boot Splash
 Description=Official CaramOS Boot Splash using existing CaramOS wallpaper and logo
@@ -542,6 +769,11 @@ bg_sprite.SetZ(-100);
 "#
     };
     atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
+    atomic_write_bytes(
+        &cfg.output_root
+            .join("etc/initramfs-tools/conf.d/caramos-plymouth"),
+        b"FRAMEBUFFER=y\n",
+    )?;
 
     let grub_default = format!(
         r#"# CaramOS 2.0 GRUB2 Configuration
@@ -558,6 +790,7 @@ GRUB_THEME="/boot/grub/themes/caramos/theme.txt"
     );
     atomic_write_bytes(&etc_default_dir.join("grub"), grub_default.as_bytes())?;
 
+    // 8. Calamares CaramOS Branding
     let calamares_branding_desc = r##"---
 componentName: caramos
 welcomeStyleCalamares: false
@@ -687,7 +920,7 @@ Presentation {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "Fcitx5 + Lotus chuyển bằng Ctrl+Shift. Ngay lần đăng nhập đầu tiên, CaramOS App Center giúp bạn cài nhanh Zalo, ONLYOFFICE, trình duyệt và tiện ích quen thuộc."
+                text: "Fcitx5 + Lotus chuyển bằng Ctrl+Shift. CaramOS App Center giúp cài nhanh Zalo, ONLYOFFICE, trình duyệt và tiện ích quen thuộc."
                 color: "#E2E8F0"
                 font.pixelSize: 16
             }
@@ -711,7 +944,7 @@ Presentation {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Kiểm tra Driver Thông minh & Giao diện Nguyên bản"
+                text: "Island Dock 3 Đảo & Kiểm tra Driver Thông minh"
                 color: "#38BDF8"
                 font.pixelSize: 24
                 font.bold: true
@@ -720,7 +953,7 @@ Presentation {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "Trình Kiểm tra Driver tự động phát hiện Wi-Fi, GPU, âm thanh và máy in — đi cùng bản sắc Cinnamon Delight, Sage Mist / Indigo Night đặc trưng của CaramOS."
+                text: "Thanh tác vụ 3 đảo nổi đặc trưng của CaramOS, kiểm tra Wi-Fi, GPU, âm thanh và máy in tự động."
                 color: "#E2E8F0"
                 font.pixelSize: 16
             }
@@ -753,7 +986,7 @@ Presentation {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "Mặc định dùng tài khoản người dùng chuẩn với quyền sudo (khóa đăng nhập root), đi kèm công cụ cập nhật OTA kiểm chứng SHA-256."
+                text: "Mặc định tài khoản người dùng chuẩn (khóa root), cập nhật OTA nguyên tử kiểm chứng SHA-256."
                 color: "#E2E8F0"
                 font.pixelSize: 16
             }
@@ -788,44 +1021,60 @@ passwordRequirements:
     maxLength: -1
 userShell: /bin/bash
 "#;
-    let users_conf_path = calamares_modules_dir.join("users.conf");
-    atomic_write_bytes(&users_conf_path, calamares_users_conf.as_bytes())?;
+    atomic_write_bytes(
+        &calamares_modules_dir.join("users.conf"),
+        calamares_users_conf.as_bytes(),
+    )?;
 
+    // 9. Phím tắt ứng dụng & thay thế autostart add-calamares-desktop-icon bằng Rust
     let calamares_desktop = r#"[Desktop Entry]
 Type=Application
 Version=1.0
-Name=Install CaramOS 2.0
-Name[vi]=Cài đặt CaramOS 2.0
-GenericName=System Installer
-GenericName[vi]=Trình Cài đặt Hệ điều hành
-Comment=Install CaramOS 2.0 onto your computer
-Comment[vi]=Cài đặt hệ điều hành CaramOS 2.0 lên máy tính (Calamares)
+Name=Cài đặt CaramOS 2.0
+Name[en]=Install CaramOS 2.0
+GenericName=Trình Cài đặt Hệ điều hành
+Comment=Cài đặt hệ điều hành CaramOS 2.0 lên máy tính (Calamares)
 Exec=/usr/bin/install-debian
 Icon=install-debian
 Terminal=false
 StartupNotify=true
 Categories=System;Settings;
 "#;
-    atomic_write_bytes(
+    atomic_write_bytes_with_mode(
         &applications_dir.join("install-debian.desktop"),
         calamares_desktop.as_bytes(),
+        0o755,
+    )?;
+
+    let calamares_autostart = r#"[Desktop Entry]
+Type=Application
+Version=1.0
+Name=CaramOS Desktop Shortcuts Sync
+Exec=/usr/local/bin/caramos-ui live-desktop-icon
+Icon=install-debian
+Terminal=false
+X-GNOME-Autostart-enabled=true
+"#;
+    atomic_write_bytes(
+        &autostart_dir.join("calamares-desktop-icon.desktop"),
+        calamares_autostart.as_bytes(),
     )?;
 
     let app_center_desktop = r#"[Desktop Entry]
 Type=Application
 Version=1.0
-Name=CaramOS App Center
-Name[vi]=Trung tâm Ứng dụng CaramOS
-Comment=Install Zalo, ONLYOFFICE, browsers and everyday apps
-Comment[vi]=Chọn và cài đặt nhanh Zalo, ONLYOFFICE, trình duyệt và tiện ích
+Name=Trung tâm Ứng dụng CaramOS
+Name[en]=CaramOS App Center
+Comment=Chọn và cài đặt nhanh Zalo, ONLYOFFICE, trình duyệt và tiện ích
 Exec=/usr/local/bin/caramos-app-center
 Icon=system-software-install
 Terminal=false
 Categories=System;Settings;
 "#;
-    atomic_write_bytes(
+    atomic_write_bytes_with_mode(
         &applications_dir.join("caramos-app-center.desktop"),
         app_center_desktop.as_bytes(),
+        0o755,
     )?;
 
     let app_center_autostart = r#"[Desktop Entry]
@@ -845,18 +1094,18 @@ X-GNOME-Autostart-enabled=true
     let driver_check_desktop = r#"[Desktop Entry]
 Type=Application
 Version=1.0
-Name=CaramOS Driver Check
-Name[vi]=Kiểm tra Driver CaramOS
-Comment=Inspect Wi-Fi, graphics, sound and printer drivers
-Comment[vi]=Kiểm tra tương thích phần cứng và cài driver/firmware đề xuất
+Name=Kiểm tra Driver CaramOS
+Name[en]=CaramOS Driver Check
+Comment=Kiểm tra tương thích phần cứng và cài driver/firmware đề xuất
 Exec=/usr/local/bin/caramos-driver-check
-Icon=preferences-system-devices
+Icon=preferences-system
 Terminal=false
 Categories=System;HardwareSettings;Settings;
 "#;
-    atomic_write_bytes(
+    atomic_write_bytes_with_mode(
         &applications_dir.join("caramos-driver-check.desktop"),
         driver_check_desktop.as_bytes(),
+        0o755,
     )?;
 
     let driver_check_autostart = r#"[Desktop Entry]
@@ -864,7 +1113,7 @@ Type=Application
 Version=1.0
 Name=CaramOS Driver Check (Autostart)
 Exec=/usr/local/bin/caramos-driver-check --autostart
-Icon=preferences-system-devices
+Icon=preferences-system
 Terminal=false
 X-GNOME-Autostart-enabled=true
 "#;
@@ -876,23 +1125,23 @@ X-GNOME-Autostart-enabled=true
     let updater_desktop = r#"[Desktop Entry]
 Type=Application
 Version=1.0
-Name=CaramOS Transactional Updater (OTA)
-Name[vi]=Trung tâm Cập nhật Hệ thống CaramOS (OTA)
-Comment=SHA-256 Verified Atomic System Updater
-Comment[vi]=Cập nhật hệ thống nguyên tử có kiểm định SHA-256
+Name=Trung tâm Cập nhật CaramOS (OTA)
+Name[en]=CaramOS Transactional Updater (OTA)
+Comment=Cập nhật hệ thống nguyên tử có kiểm định SHA-256
 Exec=sudo /usr/local/bin/caramos-ui updater --interactive
 Icon=system-software-update
 Terminal=true
 Categories=System;Settings;
 "#;
-    atomic_write_bytes(
+    atomic_write_bytes_with_mode(
         &applications_dir.join("caramos-updater.desktop"),
         updater_desktop.as_bytes(),
+        0o755,
     )?;
 
     writeln!(
         writer,
-        "{}{}✔ Đã đồng bộ giao diện GRUB2, Plymouth, Calamares, App Center & Driver Check CaramOS:{}",
+        "{}{}✔ Đã đồng bộ trọn bộ CaramOS (GRUB2, Plymouth, LightDM, Island Dock 3 đảo, Calamares & Phím tắt Desktop):{}",
         ANSI_BOLD, ANSI_SAGE, ANSI_RESET
     )
     .map_err(|e| CaramUiError::IoFailure {
@@ -924,6 +1173,83 @@ Categories=System;Settings;
 
     Ok(source_wallpaper)
 }
+
+// ============================================================================
+// 5. ĐỒNG BỘ BIỂU TƯỢNG DESKTOP (`live-desktop-icon`, THAY SCRIPT DEBIAN)
+// ============================================================================
+
+fn resolve_user_desktop_dir() -> PathBuf {
+    if let Ok(out) = Command::new("xdg-user-dir").arg("DESKTOP").output() {
+        if out.status.success() {
+            let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !txt.is_empty() {
+                return PathBuf::from(txt);
+            }
+        }
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    home.join("Desktop")
+}
+
+fn sync_desktop_shortcuts() -> Result<(), CaramUiError> {
+    let desktop_dir = resolve_user_desktop_dir();
+    fs::create_dir_all(&desktop_dir).map_err(|e| CaramUiError::IoFailure {
+        context: "Tạo thư mục Desktop người dùng".to_string(),
+        path: Some(desktop_dir.clone()),
+        source: e,
+    })?;
+
+    // Gỡ biểu tượng "Install Debian" cũ nếu từng tồn tại
+    let legacy_debian_icon = desktop_dir.join("install-debian.desktop");
+    if legacy_debian_icon.exists() {
+        let _ = fs::remove_file(&legacy_debian_icon);
+    }
+
+    let is_live = Path::new("/run/live/medium").exists();
+    let caramos_install_dst = desktop_dir.join("caramos-install.desktop");
+    let install_src = Path::new("/usr/share/applications/install-debian.desktop");
+
+    if is_live && install_src.is_file() && Path::new("/usr/bin/calamares").exists() {
+        if let Ok(bytes) = fs::read(install_src) {
+            atomic_write_bytes_with_mode(&caramos_install_dst, &bytes, 0o755)?;
+        }
+    } else if caramos_install_dst.exists() {
+        let _ = fs::remove_file(&caramos_install_dst);
+    }
+
+    // Đặt sẵn biểu tượng Firefox, App Center & Driver Check ra Desktop 1 lần duy nhất
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let state_dir = home.join(".config/caramos");
+    let marker = state_dir.join("desktop-shortcuts-v1");
+    if !marker.exists() {
+        let default_apps = [
+            ("firefox-esr.desktop", "firefox-esr.desktop"),
+            ("caramos-app-center.desktop", "caramos-app-center.desktop"),
+            ("caramos-driver-check.desktop", "caramos-driver-check.desktop"),
+        ];
+        for (src_name, dst_name) in default_apps {
+            let src = Path::new("/usr/share/applications").join(src_name);
+            let dst = desktop_dir.join(dst_name);
+            if src.is_file() && !dst.exists() {
+                if let Ok(bytes) = fs::read(&src) {
+                    let _ = atomic_write_bytes_with_mode(&dst, &bytes, 0o755);
+                }
+            }
+        }
+        let _ = fs::create_dir_all(&state_dir);
+        let _ = fs::write(&marker, b"1\n");
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// 6. TRÌNH CẬP NHẬT OTA TUI TRUYỀN LUỒNG (`sha2` + `tempfile`)
+// ============================================================================
 
 pub fn compute_file_sha256(path: &Path) -> Result<String, CaramUiError> {
     validate_safe_path(path)?;
@@ -1231,7 +1557,7 @@ fn prompt_line_with_default(prompt: &str, default_val: &str) -> Result<String, C
 #[command(
     name = "caramos-ui",
     version,
-    about = "CaramOS 2.0 Branding Stager (GRUB2, Plymouth, Calamares, Desktop Entries) and Atomic OTA TUI"
+    about = "CaramOS 2.0 Branding, 3-Island Dock Stager, Desktop Sync & Atomic OTA TUI"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -1240,7 +1566,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Chuẩn bị giao diện GRUB2, Plymouth, Calamares & phím tắt App Center / Driver Check
+    /// Chuẩn bị giao diện GRUB2, Plymouth, LightDM, Island Dock 3 đảo & Calamares Branding
     #[command(alias = "bootloader")]
     Branding {
         #[arg(long, default_value = "./build/ui_overlay")]
@@ -1256,6 +1582,8 @@ enum Commands {
         #[arg(long, default_value_t = 720)]
         height: u16,
     },
+    /// Đồng bộ biểu tượng Cài đặt CaramOS, Firefox, App Center & Driver Check ra Desktop
+    LiveDesktopIcon,
     /// Bảng điều khiển cập nhật OTA TUI kèm xác thực SHA-256 & Rollback nguyên tử
     Updater {
         #[arg(long)]
@@ -1325,6 +1653,7 @@ pub fn run_cli(args: &[String]) -> Result<(), CaramUiError> {
             let _ = build_caramos_branding_overlay(&cfg, &mut stdout)?;
             Ok(())
         }
+        Commands::LiveDesktopIcon => sync_desktop_shortcuts(),
         Commands::Updater {
             mut root,
             mut target,
@@ -1414,7 +1743,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_branding_stages_calamares_app_center_and_driver_check() -> Result<(), CaramUiError> {
+    fn test_branding_stages_island_dock_lightdm_and_calamares() -> Result<(), CaramUiError> {
         let temp_base = TempDir::new().map_err(|e| CaramUiError::IoFailure {
             context: "Tạo TempDir test branding".to_string(),
             path: None,
@@ -1454,19 +1783,19 @@ mod tests {
         let _ = build_caramos_branding_overlay(&cfg, &mut log)?;
 
         assert!(out_dir
-            .join("usr/share/applications/caramos-app-center.desktop")
+            .join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css")
             .is_file());
         assert!(out_dir
-            .join("etc/xdg/autostart/caramos-app-center.desktop")
+            .join("etc/lightdm/lightdm-gtk-greeter.conf.d/50-caramos.conf")
             .is_file());
         assert!(out_dir
-            .join("usr/share/applications/caramos-driver-check.desktop")
+            .join("etc/skel/.config/cinnamon/spices/grouped-window-list@cinnamon.org/1.json")
             .is_file());
         assert!(out_dir
-            .join("etc/xdg/autostart/caramos-driver-check.desktop")
+            .join("etc/initramfs-tools/conf.d/caramos-plymouth")
             .is_file());
         assert!(out_dir
-            .join("etc/calamares/branding/caramos/branding.desc")
+            .join("etc/xdg/autostart/calamares-desktop-icon.desktop")
             .is_file());
 
         Ok(())
