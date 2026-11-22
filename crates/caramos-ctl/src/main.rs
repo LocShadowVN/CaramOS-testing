@@ -377,7 +377,100 @@ fn stage_binary_into_rootfs(bin_src: &Path, rootfs: &Path) -> Result<PathBuf, Ca
 pub fn apply_calamares_caramos_branding(rootfs: &Path) -> Result<bool, CaramCtlError> {
     let settings_path = rootfs.join("etc/calamares/settings.conf");
     let branding_desc = rootfs.join("etc/calamares/branding/caramos/branding.desc");
+/// Tự động kích hoạt đúng theme Island Dock 3 đảo, icon màu, con trỏ và danh sách applet
+/// theo các tài nguyên thực tế có trong rootfs (không bao giờ rơi về thanh đen trơn hay icon đen-trắng).
+fn configure_cinnamon_caramos_desktop(rootfs: &Path) -> Result<(), CaramCtlError> {
+    let themes_dir = rootfs.join("usr/share/themes");
+    let icons_dir = rootfs.join("usr/share/icons");
+    let applets_dir = rootfs.join("usr/share/cinnamon/applets");
 
+    let shell_theme = if themes_dir.join("Cinnamon-Delight/cinnamon").is_dir() {
+        "Cinnamon-Delight"
+    } else {
+        "CaramOS-Island"
+    };
+    let gtk_theme = if themes_dir.join("Cinnamon-Delight/gtk-3.0").is_dir() {
+        "Cinnamon-Delight"
+    } else {
+        "Arc"
+    };
+    let icon_theme = if icons_dir.join("Tela-circle").is_dir() {
+        "Tela-circle"
+    } else {
+        "Papirus"
+    };
+    let cursor_theme = if icons_dir.join("Bibata-Modern-Classic").is_dir() {
+        "Bibata-Modern-Classic"
+    } else {
+        "breeze_cursors"
+    };
+
+    let right_applets = if applets_dir.join("caramos-control-center@caramos").is_dir() {
+        "'panel1:right:0:systray@cinnamon.org:2', 'panel1:right:1:xapp-status@cinnamon.org:3', 'panel1:right:2:caramos-control-center@caramos:4', 'panel1:right:3:calendar@cinnamon.org:7'"
+    } else {
+        "'panel1:right:0:systray@cinnamon.org:2', 'panel1:right:1:xapp-status@cinnamon.org:3', 'panel1:right:2:network@cinnamon.org:4', 'panel1:right:3:sound@cinnamon.org:5', 'panel1:right:4:power@cinnamon.org:6', 'panel1:right:5:calendar@cinnamon.org:7'"
+    };
+
+    let dconf_profile = "user-db:user\nsystem-db:local\n";
+    atomic_write_file(&rootfs.join("etc/dconf/profile/user"), dconf_profile.as_bytes())?;
+
+    let dconf_defaults = format!(
+        "[org/cinnamon]\n\
+         panels-enabled=['1:0:bottom']\n\
+         panels-height=['1:48']\n\
+         enabled-applets=['panel1:left:0:menu@cinnamon.org:0', 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         next-applet-id=10\n\
+         favorite-apps=['firefox-esr.desktop', 'nemo.desktop', 'caramos-app-center.desktop', 'caramos-driver-check.desktop', 'org.gnome.Terminal.desktop']\n\
+         \n\
+         [org/cinnamon/theme]\n\
+         name='{shell_theme}'\n\
+         \n\
+         [org/cinnamon/desktop/interface]\n\
+         gtk-theme='{gtk_theme}'\n\
+         icon-theme='{icon_theme}'\n\
+         cursor-theme='{cursor_theme}'\n\
+         font-name='Be Vietnam Pro 10'\n\
+         \n\
+         [org/cinnamon/desktop/wm/preferences]\n\
+         theme='{gtk_theme}'\n\
+         titlebar-font='Be Vietnam Pro Bold 10'\n\
+         \n\
+         [org/nemo/desktop]\n\
+         font='Be Vietnam Pro 10'\n\
+         home-icon-visible=false\n\
+         computer-icon-visible=false\n"
+    );
+    atomic_write_file(
+        &rootfs.join("etc/dconf/db/local.d/99-caramos-island"),
+        dconf_defaults.as_bytes(),
+    )?;
+
+    let gschema_override = format!(
+        "[org.cinnamon]\n\
+         panels-enabled=['1:0:bottom']\n\
+         panels-height=['1:48']\n\
+         enabled-applets=['panel1:left:0:menu@cinnamon.org:0', 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         next-applet-id=10\n\
+         \n\
+         [org.cinnamon.theme]\n\
+         name='{shell_theme}'\n\
+         \n\
+         [org.cinnamon.desktop.interface]\n\
+         gtk-theme='{gtk_theme}'\n\
+         icon-theme='{icon_theme}'\n\
+         cursor-theme='{cursor_theme}'\n\
+         font-name='Be Vietnam Pro 10'\n\
+         \n\
+         [org.cinnamon.desktop.wm.preferences]\n\
+         theme='{gtk_theme}'\n"
+    );
+    atomic_write_file(
+        &rootfs.join("usr/share/glib-2.0/schemas/99-caramos-island.gschema.override"),
+        gschema_override.as_bytes(),
+    )?;
+
+    Ok(())
+}
     if !settings_path.is_file() || !branding_desc.is_file() {
         return Ok(false);
     }
