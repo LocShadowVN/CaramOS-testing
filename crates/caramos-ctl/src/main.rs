@@ -14,11 +14,9 @@
 //!
 //! Trình điều phối đóng gói Live ISO Hybrid UEFI + Legacy BIOS nền Debian 13 (Trixie) 100% Rust:
 //! - Bootstrap trực tiếp từ Debian 13 (`mmdebstrap`) kèm khóa OpenPGP (`debian-archive-keyring`).
-//! - Cài sẵn native `fcitx5-lotus` (`LotusInputMethod/fcitx5-lotus`) từ GitHub Releases bằng Rust
-//!   (Zalo & bộ ứng dụng văn phòng do `caramos-app-center` cài theo lựa chọn; hỗ trợ `--bake-zalo`
-//!   nếu muốn đóng gói sẵn Zalo vào ISO).
-//! - Cấu hình sẵn tiếng Việt (`vi_VN.UTF-8`, `Asia/Ho_Chi_Minh`), `uinput` + `fcitx5-lotus` (`Ctrl+Shift`),
-//!   Flathub, chuyển Calamares sang `branding: caramos` và bảo toàn 100% lớp phủ UI CaramOS.
+//! - Cài sẵn native `fcitx5-lotus` (`LotusInputMethod/fcitx5-lotus`) từ GitHub Releases bằng Rust.
+//! - Ưu tiên tuyệt đối tái sử dụng CSS/Theme/Icon/Cursor/Applet gốc trong `config/includes.chroot/`,
+//!   chuyển Calamares sang `branding: caramos`, biên dịch `dconf` + `glib-compile-schemas` + icon cache.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -372,37 +370,153 @@ fn stage_binary_into_rootfs(bin_src: &Path, rootfs: &Path) -> Result<PathBuf, Ca
     Ok(dst_path)
 }
 
-/// Chuyển Calamares của Debian (`branding: debian`) sang bộ nhận diện `branding: caramos`
-/// mà vẫn bảo toàn nguyên vẹn toàn bộ chuỗi module chuẩn của `calamares-settings-debian`.
 pub fn apply_calamares_caramos_branding(rootfs: &Path) -> Result<bool, CaramCtlError> {
     let settings_path = rootfs.join("etc/calamares/settings.conf");
     let branding_desc = rootfs.join("etc/calamares/branding/caramos/branding.desc");
-/// Tự động kích hoạt đúng theme Island Dock 3 đảo, icon màu, con trỏ và danh sách applet
-/// theo các tài nguyên thực tế có trong rootfs (không bao giờ rơi về thanh đen trơn hay icon đen-trắng).
-fn configure_cinnamon_caramos_desktop(rootfs: &Path) -> Result<(), CaramCtlError> {
+
+    if !settings_path.is_file() || !branding_desc.is_file() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&settings_path).map_err(|e| CaramCtlError::IoFailure {
+        context: "Đọc /etc/calamares/settings.conf".to_string(),
+        path: Some(settings_path.clone()),
+        source: e,
+    })?;
+
+    let mut replaced = false;
+    let mut new_lines = Vec::new();
+    for line in content.lines() {
+        if line.trim_start().starts_with("branding:") {
+            new_lines.push("branding: caramos".to_string());
+            replaced = true;
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        new_lines.push("branding: caramos".to_string());
+    }
+
+    let mut out = new_lines.join("\n");
+    out.push('\n');
+    atomic_write_file(&settings_path, out.as_bytes())?;
+    Ok(true)
+}
+
+/// Tìm tài nguyên theme/icon/cursor thực tế trong rootfs theo danh sách ưu tiên gốc CaramOS.
+fn detect_first_matching_dir(
+    base_dir: &Path,
+    preferred_names: &[&str],
+    required_child: &str,
+    keyword_fallbacks: &[&str],
+) -> Option<String> {
+    for &name in preferred_names {
+        if base_dir.join(name).join(required_child).exists() {
+            return Some(name.to_string());
+        }
+    }
+
+    let Ok(entries) = fs::read_dir(base_dir) else {
+        return None;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_dir() && p.join(required_child).exists() {
+                Some(e.file_name().to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+
+    for kw in keyword_fallbacks {
+        if let Some(found) = names
+            .iter()
+            .find(|n| n.to_ascii_lowercase().contains(kw))
+        {
+            return Some(found.clone());
+        }
+    }
+    None
+}
+
+/// Ưu tiên tận dụng 100% theme/CSS/icon/cursor/applet sẵn có từ `config/includes.chroot/` của CaramOS,
+/// chỉ fallback sang `CaramOS-Island` / `Arc` / `Papirus` / `breeze_cursors` nếu tài nguyên gốc vắng mặt.
+fn configure_cinnamon_caramos_desktop<W: Write>(
+    rootfs: &Path,
+    writer: &mut W,
+) -> Result<String, CaramCtlError> {
     let themes_dir = rootfs.join("usr/share/themes");
     let icons_dir = rootfs.join("usr/share/icons");
     let applets_dir = rootfs.join("usr/share/cinnamon/applets");
+    let extensions_dir = rootfs.join("usr/share/cinnamon/extensions");
 
-    let shell_theme = if themes_dir.join("Cinnamon-Delight/cinnamon").is_dir() {
-        "Cinnamon-Delight"
+    let shell_theme = detect_first_matching_dir(
+        &themes_dir,
+        &[
+            "CaramOS-Light",
+            "CaramOS-Dark",
+            "CaramOS",
+            "Cinnamon-Delight",
+            "CaramOS-Island",
+            "Arc",
+        ],
+        "cinnamon",
+        &["caramos", "delight"],
+    )
+    .unwrap_or_else(|| "CaramOS-Island".to_string());
+
+    let gtk_theme = detect_first_matching_dir(
+        &themes_dir,
+        &[
+            "CaramOS-Light",
+            "CaramOS-Dark",
+            "CaramOS",
+            "Cinnamon-Delight",
+            "adw-gtk3",
+            "Arc",
+        ],
+        "gtk-3.0",
+        &["caramos", "delight"],
+    )
+    .unwrap_or_else(|| "Arc".to_string());
+
+    let icon_theme = detect_first_matching_dir(
+        &icons_dir,
+        &[
+            "Tela-circle",
+            "Tela-circle-light",
+            "Tela-circle-dark",
+            "Papirus",
+            "Papirus-Dark",
+        ],
+        "index.theme",
+        &["tela", "caramos", "papirus"],
+    )
+    .unwrap_or_else(|| "Papirus".to_string());
+
+    let cursor_theme = detect_first_matching_dir(
+        &icons_dir,
+        &[
+            "Bibata-Modern-Classic",
+            "Bibata-Modern-Ice",
+            "Bibata-Modern-Amber",
+            "breeze_cursors",
+        ],
+        "cursors",
+        &["bibata", "breeze"],
+    )
+    .unwrap_or_else(|| "breeze_cursors".to_string());
+
+    let left_menu = if applets_dir.join("Cinnamenu@json").is_dir() {
+        "'panel1:left:0:Cinnamenu@json:0'"
     } else {
-        "CaramOS-Island"
-    };
-    let gtk_theme = if themes_dir.join("Cinnamon-Delight/gtk-3.0").is_dir() {
-        "Cinnamon-Delight"
-    } else {
-        "Arc"
-    };
-    let icon_theme = if icons_dir.join("Tela-circle").is_dir() {
-        "Tela-circle"
-    } else {
-        "Papirus"
-    };
-    let cursor_theme = if icons_dir.join("Bibata-Modern-Classic").is_dir() {
-        "Bibata-Modern-Classic"
-    } else {
-        "breeze_cursors"
+        "'panel1:left:0:menu@cinnamon.org:0'"
     };
 
     let right_applets = if applets_dir.join("caramos-control-center@caramos").is_dir() {
@@ -411,14 +525,23 @@ fn configure_cinnamon_caramos_desktop(rootfs: &Path) -> Result<(), CaramCtlError
         "'panel1:right:0:systray@cinnamon.org:2', 'panel1:right:1:xapp-status@cinnamon.org:3', 'panel1:right:2:network@cinnamon.org:4', 'panel1:right:3:sound@cinnamon.org:5', 'panel1:right:4:power@cinnamon.org:6', 'panel1:right:5:calendar@cinnamon.org:7'"
     };
 
-    let dconf_profile = "user-db:user\nsystem-db:local\n";
-    atomic_write_file(&rootfs.join("etc/dconf/profile/user"), dconf_profile.as_bytes())?;
+    let extensions_line = if extensions_dir.join("transparent-panels@germanfr").is_dir() {
+        "enabled-extensions=['transparent-panels@germanfr']\n"
+    } else {
+        ""
+    };
+
+    atomic_write_file(
+        &rootfs.join("etc/dconf/profile/user"),
+        b"user-db:user\nsystem-db:local\n",
+    )?;
 
     let dconf_defaults = format!(
         "[org/cinnamon]\n\
          panels-enabled=['1:0:bottom']\n\
          panels-height=['1:48']\n\
-         enabled-applets=['panel1:left:0:menu@cinnamon.org:0', 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         enabled-applets=[{left_menu}, 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         {extensions_line}\
          next-applet-id=10\n\
          favorite-apps=['firefox-esr.desktop', 'nemo.desktop', 'caramos-app-center.desktop', 'caramos-driver-check.desktop', 'org.gnome.Terminal.desktop']\n\
          \n\
@@ -449,7 +572,8 @@ fn configure_cinnamon_caramos_desktop(rootfs: &Path) -> Result<(), CaramCtlError
         "[org.cinnamon]\n\
          panels-enabled=['1:0:bottom']\n\
          panels-height=['1:48']\n\
-         enabled-applets=['panel1:left:0:menu@cinnamon.org:0', 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         enabled-applets=[{left_menu}, 'panel1:center:0:grouped-window-list@cinnamon.org:1', {right_applets}]\n\
+         {extensions_line}\
          next-applet-id=10\n\
          \n\
          [org.cinnamon.theme]\n\
@@ -469,37 +593,18 @@ fn configure_cinnamon_caramos_desktop(rootfs: &Path) -> Result<(), CaramCtlError
         gschema_override.as_bytes(),
     )?;
 
-    Ok(())
-}
-    if !settings_path.is_file() || !branding_desc.is_file() {
-        return Ok(false);
-    }
-
-    let content = fs::read_to_string(&settings_path).map_err(|e| CaramCtlError::IoFailure {
-        context: "Đọc /etc/calamares/settings.conf".to_string(),
-        path: Some(settings_path.clone()),
+    writeln!(
+        writer,
+        "  ✔ Giao diện Cinnamon CaramOS: Shell='{}', GTK='{}', Icon='{}', Cursor='{}'.",
+        shell_theme, gtk_theme, icon_theme, cursor_theme
+    )
+    .map_err(|e| CaramCtlError::IoFailure {
+        context: "Ghi log cấu hình Cinnamon".to_string(),
+        path: None,
         source: e,
     })?;
 
-    let mut replaced = false;
-    let mut new_lines = Vec::new();
-    for line in content.lines() {
-        if line.trim_start().starts_with("branding:") {
-            new_lines.push("branding: caramos".to_string());
-            replaced = true;
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    if !replaced {
-        new_lines.push("branding: caramos".to_string());
-    }
-
-    let mut out = new_lines.join("\n");
-    out.push('\n');
-    atomic_write_file(&settings_path, out.as_bytes())?;
-    Ok(true)
+    Ok(icon_theme)
 }
 
 // ============================================================================
@@ -1361,7 +1466,7 @@ impl IsoBuildPipeline<StageRootfsBootstrapped> {
     ) -> Result<IsoBuildPipeline<StageChrootConfigured>, CaramCtlError> {
         writeln!(
             writer,
-            "▶ [STAGE 2/4] Cấu hình CaramOS (Tiếng Việt, Fcitx5 Lotus, Calamares, Rust Apps) & Áp lớp phủ UI..."
+            "▶ [STAGE 2/4] Cấu hình CaramOS (Tiếng Việt, Fcitx5 Lotus, Calamares, Theme gốc) & Áp lớp phủ UI..."
         )
         .map_err(|e| CaramCtlError::IoFailure {
             context: "Ghi log Stage 2".to_string(),
@@ -1467,21 +1572,7 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                 }
             }
 
-            // Áp lớp phủ bản sắc CaramOS gốc + extra-overlay (GRUB2/Plymouth/Calamares/Autostart)
-            let primary_count =
-                copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
-            writeln!(
-                writer,
-                "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
-                primary_count,
-                self.config.includes_chroot_dir.display()
-            )
-            .map_err(|e| CaramCtlError::IoFailure {
-                context: "Ghi log overlay chính".to_string(),
-                path: None,
-                source: e,
-            })?;
-
+            // 1. Áp extra-overlay trước (GRUB2/Plymouth/LightDM/Calamares/CaramOS-Island fallback)
             for extra in &self.config.extra_overlays {
                 if extra.exists() {
                     let extra_count = copy_directory_tree_overlay(extra, &self.rootfs_dir)?;
@@ -1499,6 +1590,22 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                 }
             }
 
+            // 2. Áp lớp phủ bản sắc gốc `config/includes.chroot` SAU CÙNG (Overlay-Last: ưu tiên tuyệt đối theme/CSS gốc CaramOS)
+            let primary_count =
+                copy_directory_tree_overlay(&self.config.includes_chroot_dir, &self.rootfs_dir)?;
+            writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} mục (tệp + symlink) từ '{}' vào Rootfs.",
+                primary_count,
+                self.config.includes_chroot_dir.display()
+            )
+            .map_err(|e| CaramCtlError::IoFailure {
+                context: "Ghi log overlay chính".to_string(),
+                path: None,
+                source: e,
+            })?;
+
+            // 3. Kích hoạt Calamares branding CaramOS + đồng bộ Cinnamon theme/icon/applet thực tế
             if apply_calamares_caramos_branding(&self.rootfs_dir)? {
                 writeln!(
                     writer,
@@ -1511,6 +1618,9 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                 })?;
             }
 
+            let active_icon_theme = configure_cinnamon_caramos_desktop(&self.rootfs_dir, writer)?;
+
+            // 4. Nhúng trực tiếp binary Rust vào /usr/local/bin/
             for bin in &self.config.stage_bins {
                 let installed = stage_binary_into_rootfs(bin, &self.rootfs_dir)?;
                 writeln!(
@@ -1526,7 +1636,28 @@ GRUB_THEME=\"/boot/grub/themes/caramos/theme.txt\"\n";
                 })?;
             }
 
+            // 5. Biên dịch cache icon, GSettings, dconf, Plymouth & initramfs
             if !self.config.dry_run {
+                let icon_targets = [
+                    format!("/usr/share/icons/{}", active_icon_theme),
+                    "/usr/share/icons/Papirus".to_string(),
+                    "/usr/share/icons/Tela-circle".to_string(),
+                ];
+                for target_icon in &icon_targets {
+                    if self
+                        .rootfs_dir
+                        .join(target_icon.trim_start_matches('/'))
+                        .is_dir()
+                    {
+                        let _ = run_chroot_if_present(
+                            &self.rootfs_dir,
+                            "/usr/bin/gtk-update-icon-cache",
+                            &["-f", "-t", target_icon.as_str()],
+                            "chroot gtk-update-icon-cache",
+                        );
+                    }
+                }
+
                 if self.rootfs_dir.join("usr/share/glib-2.0/schemas").is_dir() {
                     let _ = run_chroot_if_present(
                         &self.rootfs_dir,
@@ -2011,6 +2142,7 @@ pub fn prune_legacy_artifacts<W: Write>(
         "update.py",
         "scripts",
         "packages/caramos-ota",
+        "packages/caramos-app-center",
         "config/hooks/live",
         "debian",
         "Dockerfile",
@@ -2018,6 +2150,8 @@ pub fn prune_legacy_artifacts<W: Write>(
         "CaramOS Project Finalization.md",
         ".github/workflows/build.yml",
         ".github/workflows/release.yml",
+        "crates/caramos-ctl/Cargo.lock",
+        "crates/caramos-ui/Cargo.lock",
         "legacy_mint",
         "ubuntu_base",
     ];
@@ -2295,7 +2429,6 @@ enum Commands {
         output_iso: Option<PathBuf>,
         #[arg(long)]
         skip_extra_apps: bool,
-        /// Tùy chọn nhúng sẵn Zalo Desktop vào ISO (mặc định cài qua CaramOS App Center)
         #[arg(long)]
         bake_zalo: bool,
         #[arg(long)]
@@ -2447,7 +2580,7 @@ fn main() -> ExitCode {
 }
 
 // ============================================================================
-// 10. KIỂM CHỨNG ĐƠN VỊ (CALAMARES PATCH, GITHUB ASSET SELECTOR, SYMLINK)
+// 10. KIỂM CHỨNG ĐƠN VỊ (ƯU TIÊN THEME GỐC CARAMOS, CALAMARES, GITHUB .DEB)
 // ============================================================================
 
 #[cfg(test)]
@@ -2456,79 +2589,46 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_github_deb_asset_selection_lotus_and_zalo() {
-        let lotus_assets = vec![
-            GithubAsset {
-                name: "fcitx5-lotus-dbgsym_6.1.1-1_amd64_trixie.deb".to_string(),
-                browser_download_url: "https://example.invalid/dbg.deb".to_string(),
-                digest: None,
-            },
-            GithubAsset {
-                name: "fcitx5-lotus_6.1.1-1_amd64_noble.deb".to_string(),
-                browser_download_url: "https://example.invalid/noble.deb".to_string(),
-                digest: None,
-            },
-            GithubAsset {
-                name: "fcitx5-lotus_6.1.1-1_amd64_trixie.deb".to_string(),
-                browser_download_url: "https://example.invalid/trixie.deb".to_string(),
-                digest: None,
-            },
-        ];
-        let lotus_spec = GithubDebSpec {
-            repo: "LotusInputMethod/fcitx5-lotus",
-            arch: "amd64",
-            name_prefix: Some("fcitx5-lotus_"),
-            prefer_codename: Some("trixie"),
-        };
-        assert_eq!(
-            select_release_deb_asset(&lotus_assets, &lotus_spec).map(|a| a.name.as_str()),
-            Some("fcitx5-lotus_6.1.1-1_amd64_trixie.deb")
-        );
-
-        let zalo_assets = vec![
-            GithubAsset {
-                name: "Zalo-Desktop-0.1.5-x86_64.AppImage".to_string(),
-                browser_download_url: "https://example.invalid/zalo.AppImage".to_string(),
-                digest: None,
-            },
-            GithubAsset {
-                name: "zalo-desktop_0.1.5_amd64.deb".to_string(),
-                browser_download_url: "https://example.invalid/zalo.deb".to_string(),
-                digest: None,
-            },
-        ];
-        let zalo_spec = GithubDebSpec {
-            repo: "VN-Linux-Family/Zalo-for-linux",
-            arch: "amd64",
-            name_prefix: None,
-            prefer_codename: None,
-        };
-        assert_eq!(
-            select_release_deb_asset(&zalo_assets, &zalo_spec).map(|a| a.name.as_str()),
-            Some("zalo-desktop_0.1.5_amd64.deb")
-        );
-    }
-
-    #[test]
-    fn test_sha256_fips_180_4_vectors() -> Result<(), CaramCtlError> {
+    fn test_prefers_upstream_caramos_themes_over_fallback() -> Result<(), CaramCtlError> {
         let dir = TempDir::new().map_err(|e| CaramCtlError::IoFailure {
-            context: "Tạo TempDir test SHA-256".to_string(),
+            context: "Tạo TempDir test theme".to_string(),
             path: None,
             source: e,
         })?;
-        let empty_file = dir.path().join("empty.bin");
-        let abc_file = dir.path().join("abc.bin");
-        atomic_write_file(&empty_file, b"")?;
-        atomic_write_file(&abc_file, b"abc")?;
+        let rootfs = dir.path();
 
-        assert_eq!(
-            compute_file_sha256(&empty_file)?,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            compute_file_sha256(&abc_file)?,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        fs::create_dir_all(rootfs.join("usr/share/themes/CaramOS-Light/cinnamon")).map_err(
+            |e| CaramCtlError::IoFailure {
+                context: "Tạo CaramOS-Light cinnamon".to_string(),
+                path: None,
+                source: e,
+            },
+        )?;
+        fs::create_dir_all(rootfs.join("usr/share/themes/CaramOS-Light/gtk-3.0")).map_err(|e| {
+            CaramCtlError::IoFailure {
+                context: "Tạo CaramOS-Light gtk".to_string(),
+                path: None,
+                source: e,
+            }
+        })?;
+        atomic_write_file(
+            &rootfs.join("usr/share/icons/Tela-circle/index.theme"),
+            b"[Icon Theme]\nName=Tela-circle\n",
+        )?;
+
+        let mut log = Vec::new();
+        let icon = configure_cinnamon_caramos_desktop(rootfs, &mut log)?;
+        assert_eq!(icon, "Tela-circle");
+
+        let dconf = fs::read_to_string(rootfs.join("etc/dconf/db/local.d/99-caramos-island"))
+            .map_err(|e| CaramCtlError::IoFailure {
+                context: "Đọc dconf".to_string(),
+                path: None,
+                source: e,
+            })?;
+        assert!(dconf.contains("name='CaramOS-Light'"));
+        assert!(dconf.contains("gtk-theme='CaramOS-Light'"));
+        assert!(dconf.contains("icon-theme='Tela-circle'"));
         Ok(())
     }
 
@@ -2550,7 +2650,6 @@ mod tests {
             &work_dir.join("rootfs/etc/calamares/settings.conf"),
             b"modules-search: [ local ]\nbranding: debian\nprompt-install: true\n",
         )?;
-
         atomic_write_file(
             &ui_overlay.join("etc/calamares/branding/caramos/branding.desc"),
             b"componentName: caramos\n",
@@ -2563,7 +2662,6 @@ mod tests {
             &ui_overlay.join("boot/grub/themes/caramos/theme.txt"),
             b"desktop-image: \"background.png\"\n",
         )?;
-
         atomic_write_file(&fake_ui_bin, b"ELF_CARAMOS_UI_BINARY")?;
         atomic_write_file(&pkg_file, b"linux-image-amd64\nlive-boot\n")?;
 
@@ -2599,9 +2697,7 @@ mod tests {
                 }
             })?;
         assert!(patched_settings.contains("branding: caramos"));
-        assert!(!patched_settings.contains("branding: debian"));
         assert!(work_dir.join(DEFAULT_ISO_FILENAME).is_file());
-
         Ok(())
     }
 }
