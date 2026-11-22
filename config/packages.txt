@@ -1,4 +1,4 @@
-# CaramOS 2.0 — Core Vietnamese Desktop, Calamares & GTK4 Rust Apps (Debian 13 Trixie)
+# CaramOS 2.0 — Full Vietnamese Cinnamon Desktop, Island Dock, Calamares & GTK4 Rust Apps (Debian 13 Trixie)
 
 # Nhân Linux, Live Boot & Khởi tạo hệ thống
 linux-image-amd64
@@ -53,8 +53,13 @@ qml6-module-qtquick-window
 libgtk-4-1
 libadwaita-1-0
 
-# Môi trường Desktop Cinnamon & Công cụ giữ nguyên bản sắc UI CaramOS
+# Môi trường Desktop Cinnamon, bản dịch tiếng Việt & Theme/Icon/Cursor đầy đủ màu sắc
 cinnamon-core
+cinnamon-l10n
+arc-theme
+gnome-themes-extra
+papirus-icon-theme
+breeze-cursor-theme
 lightdm
 lightdm-gtk-greeter
 gnome-terminal
@@ -104,7 +109,7 @@ fonts-noto-color-emoji
 fonts-liberation
 fonts-crosextra-carlito
 
-# Công cụ phân vùng, Bootloader GRUB2 UEFI/BIOS & Plymouth
+# Công cụ phân vùng, Bootloader GRUB2 UEFI/BIOS & Plymouth Splash
 squashfs-tools
 grub-common
 grub2-common
@@ -116,3 +121,4 @@ e2fsprogs
 parted
 plymouth
 plymouth-themes
+plymouth-label
