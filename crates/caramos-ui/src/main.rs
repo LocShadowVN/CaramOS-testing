@@ -281,7 +281,7 @@ fn build_caramos_branding_overlay(
     save_png_atomically(&calamares_dir.join("logo.png"), &logo_img)?;
     save_png_atomically(&plymouth_dir.join("logo.png"), &logo_img)?;
 
-    let grub_theme = r#"title-text: "CaramOS 2.0 (Debian 13)"
+    let grub_theme = r##"title-text: "CaramOS 2.0 (Debian 13)"
 desktop-image: "background.png"
 desktop-color: "#18342a"
 terminal-font: "DejaVu Sans Mono Regular 12"
@@ -305,10 +305,10 @@ terminal-font: "DejaVu Sans Mono Regular 12"
     text = "Dùng phím mũi tên để chọn và nhấn Enter để khởi động"
     color = "#b8d0c2"
 }
-"#;
+"##;
     atomic_write_bytes(&grub_dir.join("theme.txt"), grub_theme.as_bytes())?;
 
-    let plymouth_desc = r#"[Plymouth Theme]
+    let plymouth_desc = r##"[Plymouth Theme]
 Name=CaramOS
 Description=CaramOS 2.0 Boot Splash
 ModuleName=script
@@ -316,18 +316,18 @@ ModuleName=script
 [script]
 ImageDir=/usr/share/plymouth/themes/caramos
 ScriptFile=/usr/share/plymouth/themes/caramos/caramos.script
-"#;
-    let plymouth_script = r#"Window.SetBackgroundTopColor(0.09, 0.20, 0.16);
+"##;
+    let plymouth_script = r##"Window.SetBackgroundTopColor(0.09, 0.20, 0.16);
 Window.SetBackgroundBottomColor(0.06, 0.13, 0.10);
 logo.image = Image("logo.png");
 logo.sprite = Sprite(logo.image);
 logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
 logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
-"#;
+"##;
     atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
     atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
 
-    let calamares_desc = r#"---
+    let calamares_desc = r##"---
 componentName: caramos
 welcomeStyleCalamares: true
 welcomeExpandingLogo: true
@@ -360,8 +360,8 @@ style:
     SidebarText:              "#f3f7f4"
     SidebarTextCurrent:       "#ffffff"
     SidebarBackgroundCurrent: "#2b6a44"
-"#;
-    let calamares_qml = r#"import QtQuick 2.0;
+"##;
+    let calamares_qml = r##"import QtQuick 2.0;
 import calamares.slideshow 1.0;
 
 Presentation {
@@ -374,12 +374,12 @@ Presentation {
         }
     }
 }
-"#;
+"##;
     atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
     let lightdm_conf = "[Seat:*]\nuser-session=cinnamon\ngreeter-session=slick-greeter\n";
-    let slick_conf = r#"[Greeter]
+    let slick_conf = r##"[Greeter]
 background=/usr/share/backgrounds/caramos-login.png
 draw-user-backgrounds=false
 draw-grid=false
@@ -390,7 +390,7 @@ font-name=Be Vietnam Pro 10
 show-hostname=true
 show-clock=true
 clock-format=%H:%M
-"#;
+"##;
     atomic_write_bytes(
         &output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"),
         lightdm_conf.as_bytes(),
@@ -400,7 +400,7 @@ clock-format=%H:%M
         slick_conf.as_bytes(),
     )?;
 
-    let island_light_css = r#"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
+    let island_light_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
 .panel-bottom { height: 48px; background-color: transparent; padding: 4px 10px; }
 .panelLeft, .panelCenter, .panelRight {
     background-color: rgba(248, 250, 248, 0.90);
@@ -413,8 +413,8 @@ clock-format=%H:%M
     background-color: rgba(43, 106, 68, 0.12);
     border-radius: 10px;
 }
-"#;
-    let island_dark_css = r#"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #eef3f0; }
+"##;
+    let island_dark_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #eef3f0; }
 .panel-bottom { height: 48px; background-color: transparent; padding: 4px 10px; }
 .panelLeft, .panelCenter, .panelRight {
     background-color: rgba(24, 30, 27, 0.90);
@@ -427,7 +427,7 @@ clock-format=%H:%M
     background-color: rgba(58, 133, 90, 0.22);
     border-radius: 10px;
 }
-"#;
+"##;
     atomic_write_bytes(
         &output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"),
         island_light_css.as_bytes(),
@@ -440,7 +440,7 @@ clock-format=%H:%M
     let apps_dir = output_root.join("usr/share/applications");
     let autostart_dir = output_root.join("etc/xdg/autostart");
 
-    let app_center_desktop = r#"[Desktop Entry]
+    let app_center_desktop = r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Ứng dụng CaramOS
@@ -451,8 +451,8 @@ Icon=system-software-install
 Terminal=false
 Categories=System;Settings;
 StartupNotify=true
-"#;
-    let app_center_link_desktop = r#"[Desktop Entry]
+"##;
+    let app_center_link_desktop = r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Cài đặt ứng dụng CaramOS
@@ -461,8 +461,8 @@ Icon=system-software-install
 Terminal=false
 NoDisplay=true
 MimeType=x-scheme-handler/caramos-app;
-"#;
-    let driver_check_desktop = r#"[Desktop Entry]
+"##;
+    let driver_check_desktop = r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Kiểm tra Driver
@@ -473,23 +473,23 @@ Icon=preferences-system
 Terminal=false
 Categories=System;Settings;HardwareSettings;
 StartupNotify=true
-"#;
-    let app_center_firstboot = r#"[Desktop Entry]
+"##;
+    let app_center_firstboot = r##"[Desktop Entry]
 Type=Application
 Name=CaramOS App Center First Boot
 Exec=/usr/local/bin/caramos-app-center --first-boot
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 OnlyShowIn=X-Cinnamon;
-"#;
-    let driver_check_autostart = r#"[Desktop Entry]
+"##;
+    let driver_check_autostart = r##"[Desktop Entry]
 Type=Application
 Name=CaramOS Driver Check Autostart
 Exec=/usr/local/bin/caramos-driver-check --autostart
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 OnlyShowIn=X-Cinnamon;
-"#;
+"##;
 
     atomic_write_bytes_with_mode(
         &apps_dir.join("caramos-app-center.desktop"),
