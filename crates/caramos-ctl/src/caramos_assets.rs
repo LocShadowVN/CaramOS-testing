@@ -1,4 +1,4 @@
-use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
+use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -68,15 +68,9 @@ fn install_spice_zip(
     let _ = fs::remove_dir_all(&extract_dir);
     let _ = fs::create_dir_all(&extract_dir);
 
-    let extracted = run_ok(
-        "unzip",
-        &[
-            "-qo",
-            &zip_path.to_string_lossy(),
-            "-d",
-            &extract_dir.to_string_lossy(),
-        ],
-    );
+    let zip_s = zip_path.to_string_lossy();
+    let ext_s = extract_dir.to_string_lossy();
+    let extracted = run_ok("unzip", &["-qo", zip_s.as_ref(), "-d", ext_s.as_ref()]);
     let _ = fs::remove_file(&zip_path);
     if !extracted {
         let _ = fs::remove_dir_all(&extract_dir);
@@ -88,7 +82,6 @@ fn install_spice_zip(
         let dst = dst_base.join(uuid);
         let _ = fs::remove_dir_all(&dst);
         let _ = copy_directory_tree_overlay(&src, &dst)?;
-        // Nếu là Nemo action có tệp mẫu `.nemo_action.in`, tạo `.nemo_action`
         let template_name = format!("{}.nemo_action.in", uuid);
         if let Some(tpl) = WalkDir::new(&extract_dir)
             .into_iter()
@@ -105,9 +98,6 @@ fn install_spice_zip(
     Ok(false)
 }
 
-/// Tải & cài bộ tài nguyên gốc CaramOS vào `rootfs` trong Stage 2 (Debian 13):
-/// Be Vietnam Pro, Cinnamon-Delight, Tela-circle bản chuẩn, Bibata-Modern-Classic,
-/// Cinnamenu@json, Nemo actions và giới hạn kích thước icon systray cho Fcitx5/Lotus.
 pub fn install_caramos_desktop_assets<W: Write>(
     rootfs: &Path,
     writer: &mut W,
@@ -127,15 +117,9 @@ pub fn install_caramos_desktop_assets<W: Write>(
     ) {
         let ext = work_tmp.join("be-vietnam-pro");
         let _ = fs::create_dir_all(&ext);
-        if run_ok(
-            "unzip",
-            &[
-                "-qo",
-                &zip_path.to_string_lossy(),
-                "-d",
-                &ext.to_string_lossy(),
-            ],
-        ) {
+        let zip_s = zip_path.to_string_lossy();
+        let ext_s = ext.to_string_lossy();
+        if run_ok("unzip", &["-qo", zip_s.as_ref(), "-d", ext_s.as_ref()]) {
             let font_dst = rootfs.join("usr/share/fonts/truetype/be-vietnam-pro");
             let _ = fs::create_dir_all(&font_dst);
             for entry in WalkDir::new(&ext).into_iter().filter_map(Result::ok) {
@@ -165,15 +149,9 @@ pub fn install_caramos_desktop_assets<W: Write>(
     ) {
         let icons_dir = rootfs.join("usr/share/icons");
         let _ = fs::create_dir_all(&icons_dir);
-        if run_ok(
-            "tar",
-            &[
-                "-xf",
-                &tar_path.to_string_lossy(),
-                "-C",
-                &icons_dir.to_string_lossy(),
-            ],
-        ) {
+        let tar_s = tar_path.to_string_lossy();
+        let icons_s = icons_dir.to_string_lossy();
+        if run_ok("tar", &["-xf", tar_s.as_ref(), "-C", icons_s.as_ref()]) {
             let _ = writeln!(writer, "  ✔ Đã cài con trỏ Bibata-Modern-Classic.");
         }
         let _ = fs::remove_file(&tar_path);
@@ -193,15 +171,9 @@ pub fn install_caramos_desktop_assets<W: Write>(
     if let Ok(zip_path) = delight_zip {
         let ext = work_tmp.join("cinnamon-delight");
         let _ = fs::create_dir_all(&ext);
-        if run_ok(
-            "unzip",
-            &[
-                "-qo",
-                &zip_path.to_string_lossy(),
-                "-d",
-                &ext.to_string_lossy(),
-            ],
-        ) {
+        let zip_s = zip_path.to_string_lossy();
+        let ext_s = ext.to_string_lossy();
+        if run_ok("unzip", &["-qo", zip_s.as_ref(), "-d", ext_s.as_ref()]) {
             let src = find_dir_named(&ext, "Cinnamon-Delight").unwrap_or_else(|| ext.clone());
             let dst = rootfs.join("usr/share/themes/Cinnamon-Delight");
             let _ = fs::remove_dir_all(&dst);
@@ -212,25 +184,20 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::remove_dir_all(&ext);
     }
 
-    // 4. Icon Tela-circle (CHỈ cài gói 'standard': Tela-circle, -light, -dark)
+    // 4. Icon Tela-circle (chỉ cài gói standard: Tela-circle, -light, -dark)
     if let Ok(zip_path) = download_archive(
         "https://github.com/vinceliuice/Tela-circle-icon-theme/archive/refs/heads/master.zip",
         &work_tmp,
     ) {
         let ext = work_tmp.join("tela-circle");
         let _ = fs::create_dir_all(&ext);
-        if run_ok(
-            "unzip",
-            &[
-                "-qo",
-                &zip_path.to_string_lossy(),
-                "-d",
-                &ext.to_string_lossy(),
-            ],
-        ) {
+        let zip_s = zip_path.to_string_lossy();
+        let ext_s = ext.to_string_lossy();
+        if run_ok("unzip", &["-qo", zip_s.as_ref(), "-d", ext_s.as_ref()]) {
             let installer = ext.join("Tela-circle-icon-theme-master/install.sh");
             if installer.is_file() {
                 let icons_dst = rootfs.join("usr/share/icons");
+                let _ = fs::create_dir_all(&icons_dst);
                 let icons_s = icons_dst.to_string_lossy();
                 let ok = Command::new("bash")
                     .arg(&installer)
@@ -249,7 +216,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::remove_dir_all(&ext);
     }
 
-    // 5. Applet Cinnamenu@json & Nemo actions (Sao chép đường dẫn, Tạo lối tắt trên màn hình)
+    // 5. Applet Cinnamenu@json & Nemo actions
     let applets_dst = rootfs.join("usr/share/cinnamon/applets");
     let _ = fs::create_dir_all(&applets_dst);
     if install_spice_zip(
@@ -281,10 +248,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
@@ -295,7 +259,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         }
     }
 
-    // 6. Vá lỗi icon Fcitx5/Lotus phình to trên systray (chuẩn 0170-cinnamon-task17-spices)
+    // 6. Vá giới hạn kích thước icon khay hệ thống (Fcitx5/Lotus)
     let systray_js = rootfs.join("usr/share/cinnamon/applets/systray@cinnamon.org/applet.js");
     if let Ok(src) = fs::read_to_string(&systray_js) {
         let patched = src
