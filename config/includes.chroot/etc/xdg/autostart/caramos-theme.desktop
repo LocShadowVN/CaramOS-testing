@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=CaramOS Theme Applier
-Comment=Apply custom themes on first boot
-Exec=/usr/bin/caramos-theme-apply
+Comment=Áp dụng giao diện CaramOS chuẩn ở lần đăng nhập đầu tiên
+Exec=/usr/local/bin/caramos-ui apply-theme
 AutostartCondition=unless-exists .config/caramos-theme-applied
 X-GNOME-Autostart-Phase=Desktop
 NoDisplay=true
+OnlyShowIn=X-Cinnamon;
