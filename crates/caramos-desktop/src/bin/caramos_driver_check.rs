@@ -18,6 +18,7 @@ use caramos_desktop::{
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
+use libadwaita::prelude::AdwApplicationWindowExt;
 use std::cell::{Cell, RefCell};
 use std::env;
 use std::process::ExitCode;
@@ -26,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 const APP_ID: &str = "org.caramos.DriverCheck";
-
+type ScanTriggerSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
@@ -154,7 +155,7 @@ fn build_window(app: &adw::Application, initial_report: Option<DriverScanReport>
 
     let latest_report: Rc<RefCell<Option<DriverScanReport>>> = Rc::new(RefCell::new(None));
     let is_installing = Rc::new(Cell::new(false));
-    let trigger_scan_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let trigger_scan_slot: ScanTriggerSlot = Rc::new(RefCell::new(None));
 
     let launch_install = Rc::new({
         let stack = stack.clone();
