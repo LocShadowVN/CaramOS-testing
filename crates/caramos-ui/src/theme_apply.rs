@@ -1,4 +1,4 @@
-use crate::{CaramUiError, atomic_write_bytes};
+use crate::{atomic_write_bytes, CaramUiError};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,9 +50,7 @@ fn find_default_wallpaper_uri() -> Option<String> {
         })
         .collect();
     entries.sort();
-    entries
-        .first()
-        .map(|p| format!("file://{}", p.display()))
+    entries.first().map(|p| format!("file://{}", p.display()))
 }
 
 fn has_be_vietnam_pro_font() -> bool {
@@ -116,10 +114,18 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     gsettings_set("org.cinnamon.theme", "name", &shell_theme);
     gsettings_set("org.cinnamon.desktop.interface", "gtk-theme", &gtk_theme);
     gsettings_set("org.cinnamon.desktop.interface", "icon-theme", &icon_theme);
-    gsettings_set("org.cinnamon.desktop.interface", "cursor-theme", &cursor_theme);
+    gsettings_set(
+        "org.cinnamon.desktop.interface",
+        "cursor-theme",
+        &cursor_theme,
+    );
     gsettings_set("org.cinnamon.desktop.interface", "font-name", ui_font);
     gsettings_set("org.cinnamon.desktop.wm.preferences", "theme", &gtk_theme);
-    gsettings_set("org.cinnamon.desktop.wm.preferences", "titlebar-font", title_font);
+    gsettings_set(
+        "org.cinnamon.desktop.wm.preferences",
+        "titlebar-font",
+        title_font,
+    );
     gsettings_set(
         "org.cinnamon.desktop.wm.preferences",
         "button-layout",

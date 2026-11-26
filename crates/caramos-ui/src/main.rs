@@ -90,7 +90,10 @@ pub(crate) fn atomic_write_bytes(dest: &Path, data: &[u8]) -> Result<(), CaramUi
 
 fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(), CaramUiError> {
     let parent = dest.parent().ok_or_else(|| {
-        CaramUiError::InvalidArgs(format!("Đường dẫn không có thư mục cha: {}", dest.display()))
+        CaramUiError::InvalidArgs(format!(
+            "Đường dẫn không có thư mục cha: {}",
+            dest.display()
+        ))
     })?;
     fs::create_dir_all(parent).map_err(|e| CaramUiError::Io {
         context: format!("Tạo thư mục '{}'", parent.display()),
@@ -324,8 +327,14 @@ logo.sprite = Sprite(logo.image);
 logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
 logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
 "##;
-    atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
-    atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
+    atomic_write_bytes(
+        &plymouth_dir.join("caramos.plymouth"),
+        plymouth_desc.as_bytes(),
+    )?;
+    atomic_write_bytes(
+        &plymouth_dir.join("caramos.script"),
+        plymouth_script.as_bytes(),
+    )?;
 
     let calamares_desc = r##"---
 componentName: caramos
@@ -375,7 +384,10 @@ Presentation {
     }
 }
 "##;
-    atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
+    atomic_write_bytes(
+        &calamares_dir.join("branding.desc"),
+        calamares_desc.as_bytes(),
+    )?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
     let lightdm_conf = "[Seat:*]\nuser-session=cinnamon\ngreeter-session=slick-greeter\n";
@@ -572,9 +584,11 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
         let _ = write!(out, "\x1b[2J\x1b[H");
     }
     let header_line = "══════════════════════════════════════════════════════════════";
-    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m", header_line).map_err(|e| CaramUiError::Io {
-        context: "Ghi tiêu đề OTA TUI".to_string(),
-        source: e,
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m", header_line).map_err(|e| {
+        CaramUiError::Io {
+            context: "Ghi tiêu đề OTA TUI".to_string(),
+            source: e,
+        }
     })?;
     writeln!(
         out,
@@ -648,13 +662,34 @@ mod tests {
         let dir = tempdir().unwrap();
         build_caramos_branding_overlay(dir.path(), None, None, 1280, 720).unwrap();
 
-        assert!(dir.path().join("boot/grub/themes/caramos/background.png").is_file());
-        assert!(dir.path().join("boot/grub/themes/caramos/theme.txt").is_file());
-        assert!(dir.path().join("etc/calamares/branding/caramos/branding.desc").is_file());
-        assert!(dir.path().join("etc/calamares/branding/caramos/welcome.png").is_file());
+        assert!(dir
+            .path()
+            .join("boot/grub/themes/caramos/background.png")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("boot/grub/themes/caramos/theme.txt")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("etc/calamares/branding/caramos/branding.desc")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("etc/calamares/branding/caramos/welcome.png")
+            .is_file());
         assert!(dir.path().join("etc/lightdm/slick-greeter.conf").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-app-center.desktop").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-app-center-link.desktop").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-driver-check.desktop").is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-app-center.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-app-center-link.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-driver-check.desktop")
+            .is_file());
     }
 }

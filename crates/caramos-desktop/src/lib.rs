@@ -364,7 +364,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
             "Nhẹ, mở nhanh trên máy cấu hình thấp",
             "Có sẵn trình đọc và chỉnh sửa PDF",
         ],
-        cons: &["Mã nguồn đóng", "Bản Linux qua Flathub do cộng đồng đóng gói lại"],
+        cons: &[
+            "Mã nguồn đóng",
+            "Bản Linux qua Flathub do cộng đồng đóng gói lại",
+        ],
         licence_note: "Mã nguồn đóng; điều khoản dùng trong doanh nghiệp theo quy định Kingsoft.",
         website: "https://www.wps.com/",
         flathub_id: Some("com.wps.Office"),
@@ -610,7 +613,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::ChatAndMeetings,
         icon_name: "internet-chat",
         summary: "Trò chuyện thoại, cộng đồng học tập và công nghệ",
-        pros: &["Kênh thoại chất lượng ổn định", "Tự cập nhật gọn qua Flathub"],
+        pros: &[
+            "Kênh thoại chất lượng ổn định",
+            "Tự cập nhật gọn qua Flathub",
+        ],
         cons: &["Tốn RAM mức trung bình", "Mã nguồn đóng"],
         licence_note: "Miễn phí, mã nguồn đóng theo điều khoản Discord.",
         website: "https://discord.com/",
@@ -785,7 +791,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::MediaAndDesign,
         icon_name: "camera-video",
         summary: "Quay màn hình bài giảng và phát trực tiếp chất lượng cao",
-        pros: &["Quay bài giảng mượt với PipeWire", "Livestream YouTube, Facebook"],
+        pros: &[
+            "Quay bài giảng mượt với PipeWire",
+            "Livestream YouTube, Facebook",
+        ],
         cons: &["Nhiều tùy chỉnh, cần làm quen ban đầu"],
         licence_note: "Mã nguồn mở, dùng miễn phí.",
         website: "https://obsproject.com/",
@@ -825,7 +834,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::MediaAndDesign,
         icon_name: "applications-graphics",
         summary: "Chỉnh sửa ảnh chuyên sâu thay thế Photoshop",
-        pros: &["Đầy đủ layer, mặt nạ, bộ lọc và xuất PSD", "Miễn phí, mã nguồn mở"],
+        pros: &[
+            "Đầy đủ layer, mặt nạ, bộ lọc và xuất PSD",
+            "Miễn phí, mã nguồn mở",
+        ],
         cons: &["Bố cục công cụ khác Photoshop"],
         licence_note: "Mã nguồn mở, dùng miễn phí.",
         website: "https://www.gimp.org/",
@@ -887,7 +899,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::Education,
         icon_name: "applications-graphics",
         summary: "Vẽ tranh cho học sinh tiểu học, có con dấu và giao diện tiếng Việt",
-        pros: &["Dễ dùng hơn Paint, rất hợp học sinh nhỏ", "Có giao diện tiếng Việt"],
+        pros: &[
+            "Dễ dùng hơn Paint, rất hợp học sinh nhỏ",
+            "Có giao diện tiếng Việt",
+        ],
         cons: &["Không có lớp vẽ nâng cao"],
         licence_note: "Mã nguồn mở, dùng miễn phí.",
         website: "https://tuxpaint.org/",
@@ -925,7 +940,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::Education,
         icon_name: "input-keyboard",
         summary: "Luyện gõ bàn phím 10 ngón có bài tập tiếng Việt",
-        pros: &["Rất nhẹ, chạy tốt trên máy cũ", "Có bài tập với văn bản tiếng Việt"],
+        pros: &[
+            "Rất nhẹ, chạy tốt trên máy cũ",
+            "Có bài tập với văn bản tiếng Việt",
+        ],
         cons: &["Giao diện tiếng Anh"],
         licence_note: "Mã nguồn mở, dùng miễn phí.",
         website: "https://klavaro.sourceforge.io/",
@@ -987,7 +1005,10 @@ pub const CARAMOS_APP_CATALOG: &[AppEntry] = &[
         category: AppCategory::Education,
         icon_name: "accessories-calculator",
         summary: "Hình học, đồ thị hàm số và đại số động cho môn Toán",
-        pros: &["Có tiếng Việt, mở được tệp .ggb", "Kéo thả hình học trực quan"],
+        pros: &[
+            "Có tiếng Việt, mở được tệp .ggb",
+            "Kéo thả hình học trực quan",
+        ],
         cons: &["Miễn phí học tập, không phải mã nguồn mở"],
         licence_note: "Miễn phí cho học tập và sử dụng phi thương mại.",
         website: "https://www.geogebra.org/",
@@ -1057,12 +1078,16 @@ pub struct FlathubAppMeta {
 /// Kiểm tra cú pháp ID ứng dụng Flathub dạng reverse-DNS (`org.videolan.VLC`), chặn ký tự độc hại.
 pub fn parse_install_link(raw: &str) -> Result<String, CaramDesktopError> {
     let trimmed = raw.trim();
-    let rest = trimmed
-        .strip_prefix(CARAMOS_LINK_PREFIX)
-        .ok_or_else(|| CaramDesktopError::InvalidInstallLink {
+    let rest = trimmed.strip_prefix(CARAMOS_LINK_PREFIX).ok_or_else(|| {
+        CaramDesktopError::InvalidInstallLink {
             raw: trimmed.to_string(),
-        })?;
-    let app_id = rest.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
+        }
+    })?;
+    let app_id = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
 
     let segments: Vec<&str> = app_id.split('.').collect();
     let valid_len = !app_id.is_empty() && app_id.len() <= 160 && segments.len() >= 3;
@@ -1481,10 +1506,12 @@ fn stream_download_deb(
         }
     }
 
-    tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
-        context: "Đồng bộ fsync tệp .deb".to_string(),
-        source: e,
-    })?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| CaramDesktopError::Io {
+            context: "Đồng bộ fsync tệp .deb".to_string(),
+            source: e,
+        })?;
     // Để `_apt` / `root` đọc được qua `pkexec`
     #[cfg(unix)]
     {
@@ -1792,7 +1819,11 @@ impl DriverScanReport {
             } else {
                 "TẮT / Không xác định"
             },
-            if self.nomodeset_active { "CÓ" } else { "Không" },
+            if self.nomodeset_active {
+                "CÓ"
+            } else {
+                "Không"
+            },
             self.root_free_mb
                 .map(|m| format!("{} MB", m))
                 .unwrap_or_else(|| "Không xác định".to_string()),
@@ -2017,38 +2048,45 @@ pub fn classify_pci_device(
                 &["brcm"],
                 &["wl", "brcmfmac", "b43"],
             ),
-            0x168c | 0x17cb => (vec!["firmware-atheros"], &["ath"], &["ath9k", "ath10k_pci", "ath11k_pci"]),
-            0x14c3 => (vec!["firmware-misc-nonfree"], &["mediatek", "mt79"], &["mt7921e"]),
+            0x168c | 0x17cb => (
+                vec!["firmware-atheros"],
+                &["ath"],
+                &["ath9k", "ath10k_pci", "ath11k_pci"],
+            ),
+            0x14c3 => (
+                vec!["firmware-misc-nonfree"],
+                &["mediatek", "mt79"],
+                &["mt7921e"],
+            ),
             _ => (vec!["firmware-misc-nonfree"], &["wifi", "wlan"], &[]),
         };
 
-        let (status, explanation, rec) = if expected_mods.iter().any(|m| blacklisted.contains(*m))
-            && dev.driver.is_none()
-        {
-            (
-                DriverStatus::Blocked,
-                "Trình điều khiển Wi-Fi đang bị chặn trong /etc/modprobe.d.".to_string(),
-                Vec::new(),
-            )
-        } else if has_firmware_error_matching(firmware_errors, fw_keys) {
-            (
-                DriverStatus::MissingFirmware,
-                "Nhân Linux báo thiếu tệp firmware cho card Wi-Fi này.".to_string(),
-                pkgs.into_iter().map(ToString::to_string).collect(),
-            )
-        } else if dev.driver.is_some() {
-            (
-                DriverStatus::Working,
-                "Card Wi-Fi đã nhận trình điều khiển ổn định.".to_string(),
-                Vec::new(),
-            )
-        } else {
-            (
-                DriverStatus::MissingDriver,
-                "Card Wi-Fi chưa có trình điều khiển hoạt động.".to_string(),
-                pkgs.into_iter().map(ToString::to_string).collect(),
-            )
-        };
+        let (status, explanation, rec) =
+            if expected_mods.iter().any(|m| blacklisted.contains(*m)) && dev.driver.is_none() {
+                (
+                    DriverStatus::Blocked,
+                    "Trình điều khiển Wi-Fi đang bị chặn trong /etc/modprobe.d.".to_string(),
+                    Vec::new(),
+                )
+            } else if has_firmware_error_matching(firmware_errors, fw_keys) {
+                (
+                    DriverStatus::MissingFirmware,
+                    "Nhân Linux báo thiếu tệp firmware cho card Wi-Fi này.".to_string(),
+                    pkgs.into_iter().map(ToString::to_string).collect(),
+                )
+            } else if dev.driver.is_some() {
+                (
+                    DriverStatus::Working,
+                    "Card Wi-Fi đã nhận trình điều khiển ổn định.".to_string(),
+                    Vec::new(),
+                )
+            } else {
+                (
+                    DriverStatus::MissingDriver,
+                    "Card Wi-Fi chưa có trình điều khiển hoạt động.".to_string(),
+                    pkgs.into_iter().map(ToString::to_string).collect(),
+                )
+            };
 
         return Some(HardwareFinding {
             category: HardwareCategory::Wifi,
@@ -2329,7 +2367,11 @@ fn detect_usb_peripherals(
             findings.push(HardwareFinding {
                 category: HardwareCategory::Bluetooth,
                 device_name: product_label.clone(),
-                driver_in_use: if hci_ok { Some("btusb".to_string()) } else { None },
+                driver_in_use: if hci_ok {
+                    Some("btusb".to_string())
+                } else {
+                    None
+                },
                 status,
                 explanation,
                 recommended_packages: rec,
@@ -2435,10 +2477,12 @@ pub fn save_fingerprint(fp: &str) -> Result<(), CaramDesktopError> {
             context: "Ghi dấu vân tay phần cứng".to_string(),
             source: e,
         })?;
-        tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
-            context: "fsync dấu vân tay phần cứng".to_string(),
-            source: e,
-        })?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(|e| CaramDesktopError::Io {
+                context: "fsync dấu vân tay phần cứng".to_string(),
+                source: e,
+            })?;
         tmp.persist(&path).map_err(|e| CaramDesktopError::Io {
             context: format!("Lưu '{}'", path.display()),
             source: e.error,

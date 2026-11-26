@@ -11,12 +11,12 @@
 )]
 
 use caramos_desktop::{
-    CARAMOS_APP_CATALOG, VNLF_APPS_URL, AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta,
-    InstallSource, StepSelectionMode, detect_installed_catalog_ids, download_direct_deb_to_tmp,
-    download_github_deb_to_tmp, fetch_flathub_app_meta, find_catalog_app_by_flathub_id,
-    format_size_mb, install_caramos_css, install_flatpak_app, invoke_self_pkexec,
-    is_flatpak_installed, open_external_url, parse_install_link, remove_flatpak_app,
-    run_privileged_apt_install, run_privileged_apt_remove,
+    detect_installed_catalog_ids, download_direct_deb_to_tmp, download_github_deb_to_tmp,
+    fetch_flathub_app_meta, find_catalog_app_by_flathub_id, format_size_mb, install_caramos_css,
+    install_flatpak_app, invoke_self_pkexec, is_flatpak_installed, open_external_url,
+    parse_install_link, remove_flatpak_app, run_privileged_apt_install, run_privileged_apt_remove,
+    AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta, InstallSource, StepSelectionMode,
+    CARAMOS_APP_CATALOG, VNLF_APPS_URL,
 };
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -286,7 +286,9 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     more_btn.add_css_class("flat");
     more_btn.add_css_class("more-apps-bar");
     let more_hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    let more_lbl = gtk4::Label::new(Some("Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net"));
+    let more_lbl = gtk4::Label::new(Some(
+        "Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net",
+    ));
     more_lbl.set_xalign(0.0);
     more_lbl.set_hexpand(true);
     more_lbl.set_wrap(true);
@@ -1103,7 +1105,10 @@ fn execute_batch_install(entries: Vec<&'static AppEntry>, tx: async_channel::Sen
     if !apt_targets.is_empty() {
         let _ = tx.send_blocking(WorkerEvent::Progress {
             fraction: 0.5,
-            headline: format!("Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...", apt_names.join(", ")),
+            headline: format!(
+                "Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...",
+                apt_names.join(", ")
+            ),
             log_line: format!("pkexec apt-get install {}", apt_targets.join(" ")),
         });
         match invoke_self_pkexec("--pkexec-install", &apt_targets) {

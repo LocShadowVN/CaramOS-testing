@@ -11,9 +11,9 @@
 )]
 
 use caramos_desktop::{
-    DriverScanReport, DriverStatus, HardwareCategory, HardwareFinding, install_caramos_css,
-    invoke_self_pkexec, load_saved_fingerprint, run_full_hardware_scan, run_privileged_apt_install,
-    save_fingerprint,
+    install_caramos_css, invoke_self_pkexec, load_saved_fingerprint, run_full_hardware_scan,
+    run_privileged_apt_install, save_fingerprint, DriverScanReport, DriverStatus, HardwareCategory,
+    HardwareFinding,
 };
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -186,8 +186,8 @@ fn build_window(app: &adw::Application, initial_report: Option<DriverScanReport>
 
             let (tx, rx) = async_channel::bounded::<Result<(), String>>(1);
             thread::spawn(move || {
-                let res = invoke_self_pkexec("--pkexec-install", &packages)
-                    .map_err(|e| e.to_string());
+                let res =
+                    invoke_self_pkexec("--pkexec-install", &packages).map_err(|e| e.to_string());
                 let _ = tx.send_blocking(res);
             });
 
@@ -305,8 +305,11 @@ fn build_window(app: &adw::Application, initial_report: Option<DriverScanReport>
 
             // Nhóm thiết bị theo từng loại phần cứng
             for cat in HardwareCategory::ALL {
-                let items: Vec<&HardwareFinding> =
-                    report.findings.iter().filter(|f| f.category == cat).collect();
+                let items: Vec<&HardwareFinding> = report
+                    .findings
+                    .iter()
+                    .filter(|f| f.category == cat)
+                    .collect();
                 if items.is_empty() {
                     continue;
                 }

@@ -1,4 +1,4 @@
-use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
+use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -129,7 +129,12 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::create_dir_all(&ext);
         if run_ok(
             "unzip",
-            &["-qo", &zip_path.to_string_lossy(), "-d", &ext.to_string_lossy()],
+            &[
+                "-qo",
+                &zip_path.to_string_lossy(),
+                "-d",
+                &ext.to_string_lossy(),
+            ],
         ) {
             let font_dst = rootfs.join("usr/share/fonts/truetype/be-vietnam-pro");
             let _ = fs::create_dir_all(&font_dst);
@@ -190,7 +195,12 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::create_dir_all(&ext);
         if run_ok(
             "unzip",
-            &["-qo", &zip_path.to_string_lossy(), "-d", &ext.to_string_lossy()],
+            &[
+                "-qo",
+                &zip_path.to_string_lossy(),
+                "-d",
+                &ext.to_string_lossy(),
+            ],
         ) {
             let src = find_dir_named(&ext, "Cinnamon-Delight").unwrap_or_else(|| ext.clone());
             let dst = rootfs.join("usr/share/themes/Cinnamon-Delight");
@@ -211,20 +221,25 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::create_dir_all(&ext);
         if run_ok(
             "unzip",
-            &["-qo", &zip_path.to_string_lossy(), "-d", &ext.to_string_lossy()],
+            &[
+                "-qo",
+                &zip_path.to_string_lossy(),
+                "-d",
+                &ext.to_string_lossy(),
+            ],
         ) {
             let installer = ext.join("Tela-circle-icon-theme-master/install.sh");
             if installer.is_file() {
                 let icons_dst = rootfs.join("usr/share/icons");
                 let icons_s = icons_dst.to_string_lossy();
-let ok = Command::new("bash")
-    .arg(&installer)
-    .args(["-d", icons_s.as_ref(), "standard"])
-    .stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .status()
-    .map(|s| s.success())
-    .unwrap_or(false);
+                let ok = Command::new("bash")
+                    .arg(&installer)
+                    .args(["-d", icons_s.as_ref(), "standard"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
                 if ok {
                     let _ = writeln!(writer, "  ✔ Đã cài bộ biểu tượng Tela-circle (standard).");
                 }
@@ -266,7 +281,10 @@ let ok = Command::new("bash")
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&nemo_actions)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
