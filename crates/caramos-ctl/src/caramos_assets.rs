@@ -216,15 +216,15 @@ pub fn install_caramos_desktop_assets<W: Write>(
             let installer = ext.join("Tela-circle-icon-theme-master/install.sh");
             if installer.is_file() {
                 let icons_dst = rootfs.join("usr/share/icons");
-                let _ = fs::create_dir_all(&icons_dst);
-                let ok = Command::new("bash")
-                    .arg(&installer)
-                    .args(["-d", &icons_dst.to_string_lossy(), "standard"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
+                let icons_s = icons_dst.to_string_lossy();
+let ok = Command::new("bash")
+    .arg(&installer)
+    .args(["-d", icons_s.as_ref(), "standard"])
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false);
                 if ok {
                     let _ = writeln!(writer, "  ✔ Đã cài bộ biểu tượng Tela-circle (standard).");
                 }
