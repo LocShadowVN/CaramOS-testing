@@ -21,7 +21,7 @@ use caramos_desktop::{
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
-use libadwaita::prelude::AdwWindowExt;
+use libadwaita::prelude::{AdwApplicationWindowExt, AdwWindowExt};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::env;
