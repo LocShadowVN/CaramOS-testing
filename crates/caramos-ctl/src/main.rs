@@ -24,7 +24,7 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[derive(Debug, Error)]
 pub enum CaramCtlError {
@@ -213,10 +213,6 @@ fn parse_packages_file(path: &Path) -> Result<Vec<String>, CaramCtlError> {
     Ok(pkgs)
 }
 
-// ============================================================================
-// 1. BỘ DỌN FILE DI SẢN (`caramos-ctl prune`)
-// ============================================================================
-
 const KNOWN_LEGACY_RELPATHS: &[&str] = &[
     ".gitmodules",
     "caramos_vietnam_banner.png",
@@ -301,10 +297,6 @@ fn run_prune(repo_root: &Path, execute: bool) -> Result<(), CaramCtlError> {
     Ok(())
 }
 
-// ============================================================================
-// 2. QUY TRÌNH DỰNG ISO DEBIAN 13 (`caramos-ctl build`)
-// ============================================================================
-
 struct BuildConfig {
     arch: String,
     suite: String,
@@ -354,7 +346,7 @@ fn run_chroot_if_present(
         return Ok(());
     }
     let rootfs_str = rootfs.to_string_lossy();
-    let mut full_args: Vec<&str> = vec![&rootfs_str, guest_bin];
+    let mut full_args: Vec<&str> = vec![rootfs_str.as_ref(), guest_bin];
     full_args.extend_from_slice(args);
     run_cmd_checked("chroot", &full_args, label)
 }
@@ -404,9 +396,10 @@ fn install_fcitx5_lotus_in_chroot<W: Write>(rootfs: &Path, writer: &mut W) {
         let mut reader = dl.into_reader();
         let mut data = Vec::new();
         if reader.read_to_end(&mut data).is_ok() && atomic_write_file(&tmp_deb, &data).is_ok() {
+            let rootfs_s = rootfs.to_string_lossy();
             let _ = Command::new("chroot")
                 .args([
-                    &rootfs.to_string_lossy(),
+                    rootfs_s.as_ref(),
                     "/usr/bin/apt-get",
                     "install",
                     "-y",
@@ -457,24 +450,24 @@ impl IsoBuildPipeline {
             source: e,
         })?;
 
-        writeln!(
+        let _ = writeln!(
             writer,
             "▶ [STAGE 1] Bootstrap Debian {} ({}) với {} gói (dry_run={})",
             self.config.suite,
             self.config.arch,
             packages.len(),
             self.config.dry_run
-        )
-        .ok();
+        );
 
         if !self.config.dry_run {
             let include_arg = format!("--include={}", packages.join(","));
+            let arch_arg = format!("--arch={}", self.config.arch);
             let rootfs_s = self.rootfs_dir.to_string_lossy().to_string();
             run_cmd_checked(
                 "mmdebstrap",
                 &[
                     "--variant=minbase",
-                    &format!("--arch={}", self.config.arch),
+                    &arch_arg,
                     "--components=main,contrib,non-free,non-free-firmware",
                     &include_arg,
                     &self.config.suite,
@@ -494,28 +487,25 @@ impl IsoBuildPipeline {
         &self,
         writer: &mut W,
     ) -> Result<(), CaramCtlError> {
-        writeln!(
+        let _ = writeln!(
             writer,
             "▶ [STAGE 2] Áp overlay, nhị phân Rust và cấu hình CaramOS..."
-        )
-        .ok();
+        );
 
         if let Some(ref inc) = self.config.includes_dir {
             let count = copy_directory_tree_overlay(inc, &self.rootfs_dir)?;
-            writeln!(writer, "  ✔ Đã sao chép {} tệp từ includes_dir.", count).ok();
+            let _ = writeln!(writer, "  ✔ Đã sao chép {} tệp từ includes_dir.", count);
         }
         for overlay in &self.config.extra_overlays {
             let count = copy_directory_tree_overlay(overlay, &self.rootfs_dir)?;
-            writeln!(
+            let _ = writeln!(
                 writer,
                 "  ✔ Đã sao chép {} tệp từ overlay '{}'.",
                 count,
                 overlay.display()
-            )
-            .ok();
+            );
         }
 
-        // Đặt các nhị phân Rust biên dịch vào /usr/local/bin/
         let bin_dir = self.rootfs_dir.join("usr/local/bin");
         fs::create_dir_all(&bin_dir).map_err(|e| CaramCtlError::Io {
             context: format!("Tạo '{}'", bin_dir.display()),
@@ -536,7 +526,6 @@ impl IsoBuildPipeline {
             }
         }
 
-        // Ghi nhận diện Debian 13 SAU overlay để chặn tệp etc/os-release di sản (Ubuntu/0.1) ghi đè
         let os_release = format!(
             "PRETTY_NAME=\"CaramOS 2.0 (Debian 13 Trixie)\"\n\
              NAME=\"CaramOS\"\n\
@@ -600,7 +589,6 @@ impl IsoBuildPipeline {
             &etc.join("locale.gen"),
             b"vi_VN.UTF-8 UTF-8\nen_US.UTF-8 UTF-8\n",
         )?;
-        // KHÔNG đặt LC_ALL: tránh khóa nút đổi ngôn ngữ trong Cài đặt hệ thống
         atomic_write_file(
             &etc.join("default/locale"),
             b"LANG=vi_VN.UTF-8\nLANGUAGE=vi_VN:vi\n",
@@ -727,20 +715,18 @@ impl IsoBuildPipeline {
         })?;
         let squashfs_path = live_dir.join("filesystem.squashfs");
 
-        writeln!(
+        let _ = writeln!(
             writer,
             "▶ [STAGE 3 & 4] Đóng gói '{}' -> '{}'",
             squashfs_path.display(),
             self.config.output_iso.display()
-        )
-        .ok();
+        );
 
         if self.config.dry_run {
-            writeln!(
+            let _ = writeln!(
                 writer,
                 "✔ Hoàn tất chế độ kiểm thử --dry-run (không tạo ảnh ISO)."
-            )
-            .ok();
+            );
             return Ok(());
         }
 
