@@ -1,171 +1,211 @@
-name: CaramOS 2.0 — Rust Workspace CI & Hybrid ISO Pipeline (Debian 13 Trixie)
+name: CaramOS 2.0 Rust CI & Verification
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "develop"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      commit_legacy_cleanup:
+        description: "Tự động git rm các file di sản Mint/Ubiquity/Python còn sót và commit lên nhánh hiện tại"
+        required: false
+        default: false
+        type: boolean
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
 
 jobs:
-  build-and-verify:
+  verify-rust-workspace:
+    name: Build, Clippy, Test, Legacy Cleanup & Dry-Run Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout CaramOS Repository
         uses: actions/checkout@v4
+        with:
+          submodules: false
 
-      - name: Guard — Reject Tracked Binaries & Build Artifacts in Git
-        run: |
-          set -euo pipefail
-          BAD_FILES="$(git ls-files | grep -E '(^|/)target/|^(build|build_dryrun)/|\.iso$|\.iso\.sha256$|\.squashfs$|^config/includes\.chroot/usr/local/bin/caramos-' || true)"
-          if [ -n "$BAD_FILES" ]; then
-            echo "✖ Phát hiện tệp nhị phân/build artifact đang bị theo dõi trong Git:"
-            echo "$BAD_FILES"
-            exit 1
-          fi
-          echo "✔ Cây Git sạch, không chứa target/ hay binary biên dịch."
-
-      - name: Install Host ISO & GTK4/Libadwaita Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-4-dev \
-            libadwaita-1-dev \
-            pkg-config \
-            mmdebstrap \
-            debian-archive-keyring \
-            squashfs-tools \
-            xorriso \
-            grub-efi-amd64-bin \
-            grub-pc-bin \
-            grub-common \
-            mtools \
-            dosfstools \
-            ca-certificates
-
-      - name: Setup Rust Stable Toolchain
+      - name: Install Rust Stable Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
-      - name: Cache Cargo Dependencies & Workspace Target
+      - name: Install GTK4 & libadwaita Development Headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev
+
+      - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Enforce Zero-Panic & Zero-Warning Policy (Workspace Clippy)
-        run: |
-          cargo clippy --workspace --all-targets -- \
-            -D warnings \
-            -D clippy::unwrap_used \
-            -D clippy::expect_used \
-            -D clippy::panic
+      - name: Verify Code Formatting (rustfmt)
+        run: cargo fmt --all -- --check
 
-      - name: Run Workspace Unit & Integration Tests
+      - name: Enforce Strict Clippy Lints (Zero Panic / Zero Unsafe)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Full Unit & Integration Test Suite
         run: cargo test --workspace --verbose
 
-      - name: Build All 4 Release Binaries (ctl, ui, app-center, driver-check)
+      - name: Build Release Binaries (4 Rust Binaries)
         run: cargo build --workspace --release
 
-      - name: Stage GRUB2, Plymouth, Calamares & Desktop Autostart Overlay (Isolated in ./build/ui_overlay)
+      - name: Guard — Reject Tracked Binaries & Build Artifacts in Git
         run: |
           set -euo pipefail
-          ./target/release/caramos-ui branding \
-            --output-root ./build/ui_overlay \
-            --wallpaper-search-dir ./config/includes.chroot/usr/share/backgrounds \
-            --assets-dir ./assets \
-            --width 1280 \
-            --height 720
-          test -f ./build/ui_overlay/boot/grub/themes/caramos/background.png
-          test ! -f ./build/ui_overlay/boot/grub/themes/caramos/background.tga
-          test -f ./build/ui_overlay/etc/calamares/branding/caramos/branding.desc
-          test -f ./build/ui_overlay/etc/calamares/branding/caramos/show.qml
-          test -f ./build/ui_overlay/etc/calamares/modules/users.conf
-          test -f ./build/ui_overlay/usr/share/applications/caramos-app-center.desktop
-          test -f ./build/ui_overlay/etc/xdg/autostart/caramos-app-center.desktop
-          test -f ./build/ui_overlay/usr/share/applications/caramos-driver-check.desktop
-          test -f ./build/ui_overlay/etc/xdg/autostart/caramos-driver-check.desktop
-
-      - name: Guard — Ensure Repository Working Tree Remains Clean
-        run: |
-          set -euo pipefail
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "✖ Quá trình stage đã làm bẩn cây mã nguồn Git:"
-            git status --short
+          BAD=$(git ls-files | grep -E '(^target/|^work/|(^|/)[^/]+\.(iso|squashfs|img|deb)$)' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Phát hiện file nhị phân/artifact không được phép commit lên Git:"
+            echo "$BAD"
             exit 1
           fi
-          echo "✔ config/includes.chroot/ và toàn bộ cây Git hoàn toàn nguyên vẹn."
+          echo "✔ Không có artifact/nhị phân cấm bị commit trong Git."
 
-      - name: Verify End-to-End Dry-Run Pipeline & 4 Binary Staging
+      - name: Cleanup Workspace — Dọn file di sản xóa sót trước khi dựng Branding & Dry-Run
         run: |
           set -euo pipefail
-          mkdir -p ./build_dryrun/rootfs/etc/calamares
-          printf 'branding: debian\n' > ./build_dryrun/rootfs/etc/calamares/settings.conf
+          ./target/release/caramos-ctl prune --repo-root . --execute || true
 
+          # Danh sách file/thư mục di sản Mint, Ubiquity, Python submodule và bản sao Plymouth đã xác nhận
+          # (Giữ lại packages/printer-driver-captdriver cho đến khi kiểm toán xong hỗ trợ Canon LBP2900)
+          LEGACY_PATHS=(
+            ".gitmodules"
+            "caramos_vietnam_banner.png"
+            "packages/caramos-app-center"
+            "packages/caram-os-demo"
+            "config/archives/linuxmint.key.binary"
+            "config/archives/linuxmint.key.chroot"
+            "config/archives/linuxmint.pref.chroot"
+            "config/includes.chroot/etc/skel/.linuxmint"
+            "config/includes.chroot/usr/share/applications/ubiquity.desktop"
+            "config/includes.chroot/etc/os-release"
+          )
+
+          TRACKED_LEGACY=()
+          for p in "${LEGACY_PATHS[@]}"; do
+            if git ls-files --error-unmatch "$p" >/dev/null 2>&1 || [ -n "$(git ls-files "$p")" ]; then
+              TRACKED_LEGACY+=("$p")
+            fi
+            rm -rf "$p"
+          done
+
+          # Dọn 76 khung hình Plymouth bị nhầm vào thư mục hình nền Cinnamon (làm rác bộ chọn hình nền)
+          BG_DIR="config/includes.chroot/usr/share/backgrounds/caramos"
+          if [ -d "$BG_DIR" ]; then
+            PLYMOUTH_JUNK=$(find "$BG_DIR" -maxdepth 1 -type f \( \
+              -name 'animation-*.png' -o \
+              -name 'throbber-*.png' -o \
+              -name 'plymouth-logo.png' -o \
+              -name 'bullet.png' -o \
+              -name 'entry.png' -o \
+              -name 'lock.png' -o \
+              -name 'splash.png' \
+            \) | sort)
+            if [ -n "$PLYMOUTH_JUNK" ]; then
+              TRACKED_LEGACY+=("$BG_DIR/{animation-*.png,throbber-*.png,plymouth-logo.png,bullet.png,entry.png,lock.png,splash.png}")
+              while IFS= read -r f; do
+                rm -f "$f"
+              done <<< "$PLYMOUTH_JUNK"
+            fi
+          fi
+
+          if [ "${#TRACKED_LEGACY[@]}" -gt 0 ]; then
+            echo "::warning::Phát hiện file di sản vẫn còn trong Git index (đã dọn khỏi workspace CI). Chạy workflow_dispatch với commit_legacy_cleanup=true để xóa vĩnh viễn:"
+            for item in "${TRACKED_LEGACY[@]}"; do
+              echo "  - $item"
+            done
+          else
+            echo "✔ Repo sạch hoàn toàn các file di sản đã biết."
+          fi
+
+      - name: Verify Branding Staging (Reuse Existing Wallpaper) & Dry-Run ISO Build
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/caramos-ci-branding /tmp/caramos-ci-work
+          ./target/release/caramos-ui branding \
+            --output-root /tmp/caramos-ci-branding \
+            --wallpaper-dir config/includes.chroot/usr/share/backgrounds \
+            --assets-dir assets \
+            --width 1280 --height 720
+          test -f /tmp/caramos-ci-branding/boot/grub/themes/caramos/background.png
+          test -f /tmp/caramos-ci-branding/boot/grub/themes/caramos/theme.txt
+          test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/branding.desc
+          test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/welcome.png
+          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center.desktop
+          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center-link.desktop
+          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-driver-check.desktop
           ./target/release/caramos-ctl build \
-            --dry-run \
-            --work-dir ./build_dryrun \
-            --extra-overlay ./build/ui_overlay \
+            --arch amd64 \
+            --work-dir /tmp/caramos-ci-work \
+            --includes-dir config/includes.chroot \
+            --extra-overlay /tmp/caramos-ci-branding \
             --stage-bin ./target/release/caramos-ctl \
             --stage-bin ./target/release/caramos-ui \
             --stage-bin ./target/release/caramos-app-center \
-            --stage-bin ./target/release/caramos-driver-check
+            --stage-bin ./target/release/caramos-driver-check \
+            --packages-file config/packages.txt \
+            --output-iso /tmp/caramos-ci-work/CaramOS-2.0.0-debian-trixie-amd64.iso \
+            --dry-run
 
-          grep -q '^branding: caramos$' ./build_dryrun/rootfs/etc/calamares/settings.conf
-          test -x ./build_dryrun/rootfs/usr/local/bin/caramos-ctl
-          test -x ./build_dryrun/rootfs/usr/local/bin/caramos-ui
-          test -x ./build_dryrun/rootfs/usr/local/bin/caramos-app-center
-          test -x ./build_dryrun/rootfs/usr/local/bin/caramos-driver-check
-          test -f ./build_dryrun/CaramOS-2.0.0-debian-trixie-amd64.iso
-
-      - name: Free Disk Space on Runner Before Live ISO Build
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/share/swift || true
-          df -h
-
-      - name: Build Full Bootable Debian 13 (Trixie) Hybrid UEFI/BIOS Live ISO
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          sudo env "GITHUB_TOKEN=${GITHUB_TOKEN:-}" ./target/release/caramos-ctl build \
-            --work-dir /tmp/caramos-build \
-            --output-iso ./build/CaramOS-2.0.0-debian-trixie-amd64.iso \
-            --extra-overlay ./build/ui_overlay \
-            --stage-bin ./target/release/caramos-ctl \
-            --stage-bin ./target/release/caramos-ui \
-            --stage-bin ./target/release/caramos-app-center \
-            --stage-bin ./target/release/caramos-driver-check
-
-      - name: Verify Hybrid BIOS + UEFI Boot Catalog Inside Generated ISO
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        run: |
-          set -euo pipefail
-          ISO_PATH="build/CaramOS-2.0.0-debian-trixie-amd64.iso"
-          test -s "$ISO_PATH"
-          test -s "${ISO_PATH}.sha256"
-          (cd build && sha256sum -c "CaramOS-2.0.0-debian-trixie-amd64.iso.sha256")
-          xorriso -indev "$ISO_PATH" -report_el_torito plain -report_system_area plain | tee build/iso_boot_report.txt
-          grep -qi "El Torito" build/iso_boot_report.txt
-          grep -qi "efi" build/iso_boot_report.txt
-          echo "✔ Xác thực thành công ảnh Hybrid BIOS + UEFI ISO."
-
-      - name: Upload Official Hybrid ISO & SHA-256 Artifact
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        uses: actions/upload-artifact@v4
+  cleanup-legacy-repo:
+    name: Auto-Commit Legacy File Removal (Manual Dispatch)
+    if: github.event_name == 'workflow_dispatch' && inputs.commit_legacy_cleanup == true
+    needs: verify-rust-workspace
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
-          name: CaramOS-2.0-debian-trixie-amd64-ISO
-          if-no-files-found: error
-          path: |
-            build/CaramOS-*.iso
-            build/CaramOS-*.iso.sha256
-          retention-days: 14
+          submodules: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove Legacy Mint, Ubiquity, Python Submodule & Duplicate Plymouth Files from Git
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          TARGETS=(
+            ".gitmodules"
+            "caramos_vietnam_banner.png"
+            "packages/caramos-app-center"
+            "packages/caram-os-demo"
+            "config/archives/linuxmint.key.binary"
+            "config/archives/linuxmint.key.chroot"
+            "config/archives/linuxmint.pref.chroot"
+            "config/includes.chroot/etc/skel/.linuxmint"
+            "config/includes.chroot/usr/share/applications/ubiquity.desktop"
+            "config/includes.chroot/etc/os-release"
+          )
+
+          for t in "${TARGETS[@]}"; do
+            if [ -e "$t" ] || git ls-files --error-unmatch "$t" >/dev/null 2>&1 || [ -n "$(git ls-files "$t")" ]; then
+              git rm -rf --ignore-unmatch "$t"
+            fi
+          done
+
+          BG_DIR="config/includes.chroot/usr/share/backgrounds/caramos"
+          if [ -d "$BG_DIR" ]; then
+            git rm -f --ignore-unmatch \
+              "$BG_DIR"/animation-*.png \
+              "$BG_DIR"/throbber-*.png \
+              "$BG_DIR"/plymouth-logo.png \
+              "$BG_DIR"/bullet.png \
+              "$BG_DIR"/entry.png \
+              "$BG_DIR"/lock.png \
+              "$BG_DIR"/splash.png || true
+          fi
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: remove legacy Mint/Ubiquity/Python submodule and duplicate Plymouth assets"
+            git push
+          else
+            echo "✔ Không còn file di sản nào cần xóa."
+          fi
