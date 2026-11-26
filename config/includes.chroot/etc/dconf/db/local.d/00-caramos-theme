@@ -15,9 +15,13 @@ gtk-theme='Cinnamon-Delight'
 icon-theme='Tela-circle-light'
 cursor-theme='Bibata-Modern-Classic'
 font-name='Be Vietnam Pro 10'
+clock-show-date=true
+clock-use-24h=true
 
 [org/cinnamon/desktop/wm/preferences]
 theme='Cinnamon-Delight'
+titlebar-font='Be Vietnam Pro Semi-Bold 10'
+button-layout=':minimize,maximize,close'
 
 [org/gnome/desktop/interface]
 gtk-theme='Cinnamon-Delight'
@@ -27,6 +31,15 @@ font-name='Be Vietnam Pro 10'
 
 [org/gnome/desktop/wm/preferences]
 theme='Cinnamon-Delight'
+button-layout=':minimize,maximize,close'
+
+[org/nemo/desktop]
+font='Be Vietnam Pro 10'
+computer-icon-visible=false
+home-icon-visible=false
+trash-icon-visible=true
+network-icon-visible=false
+volumes-visible=false
 
 [org/cinnamon/applets/grouped-window-list]
-pinned-apps=['firefox.desktop','nemo.desktop','caramos-app-center.desktop','cinnamon-settings.desktop']
+pinned-apps=['firefox-esr.desktop','nemo.desktop','caramos-app-center.desktop','cinnamon-settings.desktop']
