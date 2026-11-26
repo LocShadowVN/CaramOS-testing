@@ -489,50 +489,82 @@ fn build_ui(app: &adw::Application) {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
-    if let Some(mode) = args.get(1).map(String::as_str) {
-        if mode == "--privileged-apt-install" {
-            let targets: Vec<String> = args.iter().skip(2).cloned().collect();
-            return match run_privileged_apt_install(&targets) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("✖ {}", e);
-                    ExitCode::from(1)
-                }
-            };
-        }
-        if mode == "--privileged-apt-remove" {
-            let pkgs: Vec<String> = args.iter().skip(2).cloned().collect();
-            return match run_privileged_apt_remove(&pkgs) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("✖ {}", e);
-                    ExitCode::from(1)
-                }
-            };
-        }
-        if mode == "--first-boot" {
-            if is_live_session() {
-                return ExitCode::SUCCESS;
+    if args.get(1).map(String::as_str) == Some("--pkexec-install") {
+        let targets: Vec<String> = args.into_iter().skip(2).collect();
+        return match run_privileged_apt_install(&targets) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
             }
-            let state_dir = caramos_user_state_dir();
-            let marker = state_dir.join("app-center-shown");
+        };
+    }
+    if args.get(1).map(String::as_str) == Some("--pkexec-remove") {
+        let pkgs: Vec<String> = args.into_iter().skip(2).collect();
+        return match run_privileged_apt_remove(&pkgs) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    if args.iter().any(|a| a == "--first-boot") {
+        if let Some(home) = env::var_os("HOME") {
+            let marker = std::path::PathBuf::from(home)
+                .join(".config/caramos/app-center-first-boot-done");
             if marker.exists() {
                 return ExitCode::SUCCESS;
             }
-            let _ = fs::create_dir_all(&state_dir);
+            if let Some(parent) = marker.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
             let _ = fs::write(&marker, b"1\n");
         }
     }
 
-    let app = adw::Application::builder()
-        .application_id("vn.caramos.AppCenter")
-        .build();
-    app.connect_activate(build_ui);
+    let gtk_args: Vec<String> = args
+        .into_iter()
+        .filter(|a| a != "--first-boot")
+        .collect();
 
-    let exit_code = app.run_with_args::<&str>(&[]);
-    if exit_code == gtk4::glib::ExitCode::SUCCESS {
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
+
+    let (link_tx, link_rx) = async_channel::unbounded::<String>();
+    let link_rx_slot = Rc::new(RefCell::new(Some(link_rx)));
+    let window_built = Rc::new(Cell::new(false));
+
+    {
+        let link_tx_open = link_tx.clone();
+        app.connect_open(move |application, files, _hint| {
+            for file in files {
+                let _ = link_tx_open.send_blocking(file.uri().to_string());
+            }
+            application.activate();
+        });
+    }
+
+    app.connect_activate(move |application| {
+        if window_built.get() {
+            if let Some(win) = application.active_window() {
+                win.present();
+            }
+            return;
+        }
+        window_built.set(true);
+        install_caramos_css();
+        if let Some(rx) = link_rx_slot.borrow_mut().take() {
+            build_main_window(application, rx);
+        }
+    });
+
+    if app.run_with_args(&gtk_args) == glib::ExitCode::SUCCESS {
         ExitCode::SUCCESS
     } else {
-        ExitCode::from(1)
+        ExitCode::FAILURE
     }
 }
