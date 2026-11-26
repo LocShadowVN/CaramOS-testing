@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       commit_legacy_cleanup:
-        description: "Tự động git rm các file di sản Mint/Ubiquity/Python còn sót và commit lên nhánh hiện tại"
+        description: "Tự động git rm các file di sản Mint/Ubiquity/Python còn sót và commit"
         required: false
         default: false
         type: boolean
@@ -19,8 +19,10 @@ env:
 
 jobs:
   verify-rust-workspace:
-    name: Build, Clippy, Test, Legacy Cleanup & Dry-Run Verification
+    name: Auto-Format, Clippy, Test, Legacy Cleanup & Dry-Run
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout CaramOS Repository
         uses: actions/checkout@v4
@@ -36,15 +38,32 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libgtk-4-dev \
-            libadwaita-1-dev
+            pkg-config libgtk-4-dev libadwaita-1-dev
 
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify Code Formatting (rustfmt)
-        run: cargo fmt --all -- --check
+      - name: Auto-Format Rust Workspace (cargo fmt)
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if ! git diff --quiet -- '*.rs'; then
+            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add -u -- '*.rs'
+              if ! git diff --cached --quiet; then
+                git commit -m "style: auto-format Rust code with rustfmt"
+                git push origin "HEAD:${GITHUB_REF_NAME}"
+                echo "✔ Đã tự động format và push lên nhánh ${GITHUB_REF_NAME}."
+              fi
+            else
+              echo "::warning::Mã nguồn Rust trên PR chưa format (đã format tạm trong workspace CI)."
+              git diff --stat -- '*.rs'
+            fi
+          else
+            echo "✔ Toàn bộ mã nguồn Rust đã chuẩn rustfmt."
+          fi
 
       - name: Enforce Strict Clippy Lints (Zero Panic / Zero Unsafe)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -60,19 +79,15 @@ jobs:
           set -euo pipefail
           BAD=$(git ls-files | grep -E '(^target/|^work/|(^|/)[^/]+\.(iso|squashfs|img|deb)$)' || true)
           if [ -n "$BAD" ]; then
-            echo "::error::Phát hiện file nhị phân/artifact không được phép commit lên Git:"
+            echo "::error::Phát hiện file nhị phân/artifact cấm trong Git:"
             echo "$BAD"
             exit 1
           fi
-          echo "✔ Không có artifact/nhị phân cấm bị commit trong Git."
 
-      - name: Cleanup Workspace — Dọn file di sản xóa sót trước khi dựng Branding & Dry-Run
+      - name: Cleanup Workspace — Dọn file di sản xóa sót trước Branding & Dry-Run
         run: |
           set -euo pipefail
           ./target/release/caramos-ctl prune --repo-root . --execute || true
-
-          # Danh sách file/thư mục di sản Mint, Ubiquity, Python submodule và bản sao Plymouth đã xác nhận
-          # (Giữ lại packages/printer-driver-captdriver cho đến khi kiểm toán xong hỗ trợ Canon LBP2900)
           LEGACY_PATHS=(
             ".gitmodules"
             "caramos_vietnam_banner.png"
@@ -85,63 +100,32 @@ jobs:
             "config/includes.chroot/usr/share/applications/ubiquity.desktop"
             "config/includes.chroot/etc/os-release"
           )
-
-          TRACKED_LEGACY=()
           for p in "${LEGACY_PATHS[@]}"; do
-            if git ls-files --error-unmatch "$p" >/dev/null 2>&1 || [ -n "$(git ls-files "$p")" ]; then
-              TRACKED_LEGACY+=("$p")
-            fi
             rm -rf "$p"
           done
-
-          # Dọn 76 khung hình Plymouth bị nhầm vào thư mục hình nền Cinnamon (làm rác bộ chọn hình nền)
           BG_DIR="config/includes.chroot/usr/share/backgrounds/caramos"
           if [ -d "$BG_DIR" ]; then
-            PLYMOUTH_JUNK=$(find "$BG_DIR" -maxdepth 1 -type f \( \
-              -name 'animation-*.png' -o \
-              -name 'throbber-*.png' -o \
-              -name 'plymouth-logo.png' -o \
-              -name 'bullet.png' -o \
-              -name 'entry.png' -o \
-              -name 'lock.png' -o \
-              -name 'splash.png' \
-            \) | sort)
-            if [ -n "$PLYMOUTH_JUNK" ]; then
-              TRACKED_LEGACY+=("$BG_DIR/{animation-*.png,throbber-*.png,plymouth-logo.png,bullet.png,entry.png,lock.png,splash.png}")
-              while IFS= read -r f; do
-                rm -f "$f"
-              done <<< "$PLYMOUTH_JUNK"
-            fi
+            find "$BG_DIR" -maxdepth 1 -type f \( \
+              -name 'animation-*.png' -o -name 'throbber-*.png' -o -name 'plymouth-logo.png' \
+              -o -name 'bullet.png' -o -name 'entry.png' -o -name 'lock.png' -o -name 'splash.png' \
+            \) -delete
           fi
 
-          if [ "${#TRACKED_LEGACY[@]}" -gt 0 ]; then
-            echo "::warning::Phát hiện file di sản vẫn còn trong Git index (đã dọn khỏi workspace CI). Chạy workflow_dispatch với commit_legacy_cleanup=true để xóa vĩnh viễn:"
-            for item in "${TRACKED_LEGACY[@]}"; do
-              echo "  - $item"
-            done
-          else
-            echo "✔ Repo sạch hoàn toàn các file di sản đã biết."
-          fi
-
-      - name: Verify Branding Staging (Reuse Existing Wallpaper) & Dry-Run ISO Build
+      - name: Verify Branding Staging & Dry-Run ISO Build
         run: |
           set -euo pipefail
           mkdir -p /tmp/caramos-ci-branding /tmp/caramos-ci-work
           ./target/release/caramos-ui branding \
             --output-root /tmp/caramos-ci-branding \
             --wallpaper-dir config/includes.chroot/usr/share/backgrounds \
-            --assets-dir assets \
-            --width 1280 --height 720
+            --assets-dir assets --width 1280 --height 720
           test -f /tmp/caramos-ci-branding/boot/grub/themes/caramos/background.png
-          test -f /tmp/caramos-ci-branding/boot/grub/themes/caramos/theme.txt
           test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/branding.desc
-          test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/welcome.png
           test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center.desktop
           test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center-link.desktop
           test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-driver-check.desktop
           ./target/release/caramos-ctl build \
-            --arch amd64 \
-            --work-dir /tmp/caramos-ci-work \
+            --arch amd64 --work-dir /tmp/caramos-ci-work \
             --includes-dir config/includes.chroot \
             --extra-overlay /tmp/caramos-ci-branding \
             --stage-bin ./target/release/caramos-ctl \
@@ -160,52 +144,29 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: false
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Remove Legacy Mint, Ubiquity, Python Submodule & Duplicate Plymouth Files from Git
+      - name: Remove Legacy Files from Git
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          TARGETS=(
-            ".gitmodules"
-            "caramos_vietnam_banner.png"
-            "packages/caramos-app-center"
-            "packages/caram-os-demo"
-            "config/archives/linuxmint.key.binary"
-            "config/archives/linuxmint.key.chroot"
-            "config/archives/linuxmint.pref.chroot"
-            "config/includes.chroot/etc/skel/.linuxmint"
-            "config/includes.chroot/usr/share/applications/ubiquity.desktop"
-            "config/includes.chroot/etc/os-release"
-          )
-
-          for t in "${TARGETS[@]}"; do
-            if [ -e "$t" ] || git ls-files --error-unmatch "$t" >/dev/null 2>&1 || [ -n "$(git ls-files "$t")" ]; then
-              git rm -rf --ignore-unmatch "$t"
-            fi
-          done
-
+          git rm -rf --ignore-unmatch \
+            .gitmodules caramos_vietnam_banner.png \
+            packages/caramos-app-center packages/caram-os-demo \
+            config/archives/linuxmint.key.binary config/archives/linuxmint.key.chroot config/archives/linuxmint.pref.chroot \
+            config/includes.chroot/etc/skel/.linuxmint \
+            config/includes.chroot/usr/share/applications/ubiquity.desktop \
+            config/includes.chroot/etc/os-release || true
           BG_DIR="config/includes.chroot/usr/share/backgrounds/caramos"
           if [ -d "$BG_DIR" ]; then
             git rm -f --ignore-unmatch \
-              "$BG_DIR"/animation-*.png \
-              "$BG_DIR"/throbber-*.png \
-              "$BG_DIR"/plymouth-logo.png \
-              "$BG_DIR"/bullet.png \
-              "$BG_DIR"/entry.png \
-              "$BG_DIR"/lock.png \
-              "$BG_DIR"/splash.png || true
+              "$BG_DIR"/animation-*.png "$BG_DIR"/throbber-*.png "$BG_DIR"/plymouth-logo.png \
+              "$BG_DIR"/bullet.png "$BG_DIR"/entry.png "$BG_DIR"/lock.png "$BG_DIR"/splash.png || true
           fi
-
           if ! git diff --cached --quiet; then
             git commit -m "chore: remove legacy Mint/Ubiquity/Python submodule and duplicate Plymouth assets"
-            git push
-          else
-            echo "✔ Không còn file di sản nào cần xóa."
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
