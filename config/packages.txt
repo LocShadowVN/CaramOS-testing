@@ -1,124 +1,102 @@
-# CaramOS 2.0 — Full Vietnamese Cinnamon Desktop, Island Dock, Calamares & GTK4 Rust Apps (Debian 13 Trixie)
+# ==============================================================================
+# CaramOS 2.0 — Danh mục gói nền Debian 13 (Trixie) cho mmdebstrap
+# Lưu ý: giữ base Debian thuần, ưu tiên trải nghiệm UI/UX giống CaramOS gốc.
+# ==============================================================================
 
-# Nhân Linux, Live Boot & Khởi tạo hệ thống
+# --- Nhân Linux, Live Boot & Khởi động Hybrid UEFI/BIOS ---
 linux-image-amd64
-initramfs-tools
-zstd
 live-boot
-live-config
-live-config-systemd
-user-setup
-live-tools
-libpam-systemd
 systemd-sysv
 dbus
 dbus-x11
-polkitd
-pkexec
+sudo
+locales
+tzdata
 ca-certificates
 curl
-locales
-acl
+unzip
+xz-utils
 pciutils
 usbutils
-cups
-network-manager
-network-manager-gnome
-wpasupplicant
-blueman
+v4l-utils
+fontconfig
+grub-pc-bin
+grub-efi-amd64-bin
+plymouth
+plymouth-themes
+initramfs-tools
+earlyoom
 
-# Firmware phần cứng (Wi-Fi Intel/Realtek, GPU AMD/Intel, Bluetooth)
-firmware-linux-free
-firmware-iwlwifi
-firmware-realtek
-firmware-amd-graphics
-firmware-intel-graphics
-firmware-misc-nonfree
-
-# Công cụ hệ thống & Rust Userland sẵn có trên Debian 13 (Trixie)
-sudo
-rust-coreutils
-ripgrep
-fd-find
-
-# Trình cài đặt đồ họa Calamares + Qt6 QML Slideshow
+# --- Trình cài đặt đồ họa Calamares ---
 calamares
 calamares-settings-debian
-qml6-module-qtquick
-qml6-module-qtquick-controls
-qml6-module-qtquick-layouts
-qml6-module-qtquick-window
 
-# Thư viện giao diện GTK4 + libadwaita cho CaramOS App Center & Driver Check (Rust)
-libgtk-4-1
-libadwaita-1-0
-
-# Môi trường Desktop Cinnamon, bản dịch tiếng Việt & Theme/Icon/Cursor đầy đủ màu sắc
+# --- Môi trường Cinnamon chuẩn CaramOS (Debian 13 Trixie) ---
 cinnamon-core
 cinnamon-l10n
+nemo-fileroller
+slick-greeter
+lightdm
+xorg
+xdg-utils
+xdg-user-dirs
+libnotify-bin
+xclip
+flameshot
+copyq
+ddcutil
+polkitd
+pkexec
+policykit-1-gnome
+dconf-cli
+libglib2.0-bin
+libgtk-4-1
+libadwaita-1-0
+adwaita-icon-theme
 arc-theme
-gnome-themes-extra
 papirus-icon-theme
 breeze-cursor-theme
-lightdm
-lightdm-gtk-greeter
 gnome-terminal
-libglib2.0-bin
-dconf-cli
-libnotify-bin
-xdg-utils
-xdg-user-dirs-gtk
-xorg
-xserver-xorg-video-all
-xserver-xorg-input-all
+gnome-calculator
+gnome-system-monitor
+eog
+evince
+file-roller
+xarchiver
 
-# Nền tảng bộ gõ tiếng Việt Fcitx5 (fcitx5-lotus được caramos-ctl cài sẵn vào ISO)
+# --- Trình duyệt, Flatpak & Hệ thống mạng/âm thanh/in ấn ---
+firefox-esr
+firefox-esr-l10n-vi
+flatpak
+network-manager
+network-manager-gnome
+bluez
+blueman
+pipewire-audio
+wireplumber
+pavucontrol
+cups
+system-config-printer
+
+# --- Bộ gõ Tiếng Việt (Fcitx5 + Lotus cài tự động từ GitHub Releases trong Stage 2) ---
 fcitx5
-fcitx5-modules
-fcitx5-config-qt
 fcitx5-frontend-gtk3
 fcitx5-frontend-gtk4
 fcitx5-frontend-qt5
 fcitx5-frontend-qt6
+fcitx5-config-qt
+fcitx5-module-xorg
 im-config
 
-# Âm thanh hiện đại (PipeWire + WirePlumber)
-pipewire
-pipewire-audio
-pipewire-alsa
-pipewire-pulse
-wireplumber
-
-# Ứng dụng cơ bản sẵn có trong Live ISO (Zalo, ONLYOFFICE, Chrome... cài 1 chạm qua App Center)
-firefox-esr
-firefox-esr-l10n-vi
-vlc
-eog
-evince
-gnome-text-editor
-gnome-calculator
-gnome-screenshot
-file-roller
-nemo-fileroller
-flatpak
-
-# Font chữ tiếng Việt, Emoji & Tương thích tài liệu Microsoft
+# --- Phông chữ & Firmware phần cứng cơ bản ---
 fonts-dejavu-core
 fonts-noto-core
 fonts-noto-color-emoji
 fonts-liberation
 fonts-crosextra-carlito
-
-# Công cụ phân vùng, Bootloader GRUB2 UEFI/BIOS & Plymouth Splash
-squashfs-tools
-grub-common
-grub2-common
-grub-efi-amd64-bin
-grub-pc-bin
-efibootmgr
-dosfstools
-e2fsprogs
-parted
-plymouth
-plymouth-themes
-plymouth-label
+firmware-linux-free
+firmware-misc-nonfree
+firmware-iwlwifi
+firmware-realtek
+firmware-amd-graphics
+firmware-intel-graphics
