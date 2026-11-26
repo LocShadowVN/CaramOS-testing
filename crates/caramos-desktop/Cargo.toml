@@ -2,7 +2,7 @@
 name = "caramos-desktop"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 description = "CaramOS 2.0 Native Rust GTK4/libadwaita App Center & Driver Check"
 
