@@ -13,20 +13,10 @@
 mod theme_apply;
 
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use image::{ImageFormat, Rgba, RgbaImage};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use serde::Deserialize;
 use std::fs;
-use std::io::{self, Cursor, Write};
+use std::io::{self, BufRead, Cursor, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -77,12 +67,12 @@ enum Commands {
         #[arg(long, default_value_t = 1080)]
         height: u32,
     },
-    /// Áp giao diện CaramOS chuẩn ở lần đăng nhập đầu tiên (thay thế script caramos-theme-apply)
+    /// Áp giao diện CaramOS chuẩn ở lần đăng nhập đầu tiên
     ApplyTheme {
         #[arg(long)]
         force: bool,
     },
-    /// Giao diện kiểm tra cập nhật OTA dạng TUI trên terminal
+    /// Kiểm tra cập nhật OTA dạng TUI ANSI trên terminal
     Ota {
         #[arg(
             long,
@@ -221,7 +211,7 @@ fn render_fallback_logo(size: u32) -> RgbaImage {
             if dist >= inner_r && !(dx > 0.0 && dy.abs() < inner_r * 0.65) {
                 *pixel = Rgba([255, 255, 255, 255]);
             } else {
-                *pixel = Rgba([43, 106, 68, 255]); // #2b6a44 xanh rừng CaramOS
+                *pixel = Rgba([43, 106, 68, 255]);
             }
         } else {
             *pixel = Rgba([0, 0, 0, 0]);
@@ -270,7 +260,6 @@ fn build_caramos_branding_overlay(
         render_fallback_logo(128)
     };
 
-    // 1. Hình nền & Logo chuẩn hóa cho GRUB, Plymouth, LightDM, Calamares, Cinnamon
     let grub_dir = output_root.join("boot/grub/themes/caramos");
     let calamares_dir = output_root.join("etc/calamares/branding/caramos");
     let plymouth_dir = output_root.join("usr/share/plymouth/themes/caramos");
@@ -292,7 +281,6 @@ fn build_caramos_branding_overlay(
     save_png_atomically(&calamares_dir.join("logo.png"), &logo_img)?;
     save_png_atomically(&plymouth_dir.join("logo.png"), &logo_img)?;
 
-    // 2. Cấu hình GRUB2
     let grub_theme = r#"title-text: "CaramOS 2.0 (Debian 13)"
 desktop-image: "background.png"
 desktop-color: "#18342a"
@@ -320,7 +308,6 @@ terminal-font: "DejaVu Sans Mono Regular 12"
 "#;
     atomic_write_bytes(&grub_dir.join("theme.txt"), grub_theme.as_bytes())?;
 
-    // 3. Cấu hình Plymouth
     let plymouth_desc = r#"[Plymouth Theme]
 Name=CaramOS
 Description=CaramOS 2.0 Boot Splash
@@ -340,7 +327,6 @@ logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
     atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
     atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
 
-    // 4. Cấu hình Calamares
     let calamares_desc = r#"---
 componentName: caramos
 welcomeStyleCalamares: true
@@ -392,11 +378,7 @@ Presentation {
     atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
-    // 5. LightDM + Slick Greeter chuẩn CaramOS
-    let lightdm_conf = r#"[Seat:*]
-user-session=cinnamon
-greeter-session=slick-greeter
-"#;
+    let lightdm_conf = "[Seat:*]\nuser-session=cinnamon\ngreeter-session=slick-greeter\n";
     let slick_conf = r#"[Greeter]
 background=/usr/share/backgrounds/caramos-login.png
 draw-user-backgrounds=false
@@ -418,7 +400,6 @@ clock-format=%H:%M
         slick_conf.as_bytes(),
     )?;
 
-    // 6. Theme dự phòng CaramOS Island Dock (48px + màu xanh rừng DESIGN.md #2b6a44 / #3a855a)
     let island_light_css = r#"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
 .panel-bottom { height: 48px; background-color: transparent; padding: 4px 10px; }
 .panelLeft, .panelCenter, .panelRight {
@@ -456,7 +437,6 @@ clock-format=%H:%M
         island_dark_css.as_bytes(),
     )?;
 
-    // 7. Bộ .desktop ứng dụng & autostart chuẩn CaramOS
     let apps_dir = output_root.join("usr/share/applications");
     let autostart_dir = output_root.join("etc/xdg/autostart");
 
@@ -549,33 +529,10 @@ struct OtaReleaseInfo {
     body: String,
 }
 
-struct TerminalGuard;
-
-impl TerminalGuard {
-    fn enter() -> Result<Self, CaramUiError> {
-        enable_raw_mode().map_err(|e| CaramUiError::Io {
-            context: "Bật raw mode terminal".to_string(),
-            source: e,
-        })?;
-        execute!(io::stdout(), EnterAlternateScreen).map_err(|e| CaramUiError::Io {
-            context: "Mở màn hình TUI".to_string(),
-            source: e,
-        })?;
-        Ok(Self)
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-    }
-}
-
 fn fetch_ota_summary(endpoint: &str, dry_run: bool) -> String {
     if dry_run {
         return format!(
-            "Chế độ kiểm thử (--dry-run)\nNguồn: {}\nHệ thống hiện tại: CaramOS 2.0 (Debian 13 Trixie)\nTrạng thái: Sẵn sàng.",
+            "Chế độ kiểm thử (--dry-run)\nNguồn: {}\nHệ thống: CaramOS 2.0 (Debian 13 Trixie)\nTrạng thái: Sẵn sàng.",
             endpoint
         );
     }
@@ -608,66 +565,45 @@ fn fetch_ota_summary(endpoint: &str, dry_run: bool) -> String {
 
 fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
     let summary = fetch_ota_summary(endpoint, dry_run);
-    let _guard = TerminalGuard::enter()?;
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend).map_err(|e| CaramUiError::Io {
-        context: "Khởi tạo ratatui".to_string(),
+    let mut out = io::stdout();
+    let is_tty = out.is_terminal();
+
+    if is_tty {
+        let _ = write!(out, "\x1b[2J\x1b[H");
+    }
+    let header_line = "══════════════════════════════════════════════════════════════";
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m", header_line).map_err(|e| CaramUiError::Io {
+        context: "Ghi tiêu đề OTA TUI".to_string(),
+        source: e,
+    })?;
+    writeln!(
+        out,
+        "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m"
+    )
+    .map_err(|e| CaramUiError::Io {
+        context: "Ghi tiêu đề OTA TUI".to_string(),
+        source: e,
+    })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n", header_line).map_err(|e| {
+        CaramUiError::Io {
+            context: "Ghi khung OTA TUI".to_string(),
+            source: e,
+        }
+    })?;
+    writeln!(out, "{}\n", summary).map_err(|e| CaramUiError::Io {
+        context: "Ghi nội dung OTA TUI".to_string(),
+        source: e,
+    })?;
+    out.flush().map_err(|e| CaramUiError::Io {
+        context: "flush stdout".to_string(),
         source: e,
     })?;
 
-    loop {
-        terminal
-            .draw(|frame| {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .margin(1)
-                    .constraints([
-                        Constraint::Length(3),
-                        Constraint::Min(6),
-                        Constraint::Length(3),
-                    ])
-                    .split(frame.area());
-
-                if let Some(&header_rect) = chunks.first() {
-                    let title = Paragraph::new("CaramOS 2.0 — Trình kiểm tra cập nhật OTA")
-                        .style(
-                            Style::default()
-                                .fg(Color::Rgb(140, 207, 165))
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .block(Block::default().borders(Borders::ALL));
-                    frame.render_widget(title, header_rect);
-                }
-                if let Some(&body_rect) = chunks.get(1) {
-                    let body = Paragraph::new(summary.as_str())
-                        .wrap(Wrap { trim: false })
-                        .block(Block::default().title("Thông tin phát hành").borders(Borders::ALL));
-                    frame.render_widget(body, body_rect);
-                }
-                if let Some(&foot_rect) = chunks.get(2) {
-                    let foot = Paragraph::new("Nhấn 'q' hoặc Esc để thoát")
-                        .block(Block::default().borders(Borders::ALL));
-                    frame.render_widget(foot, foot_rect);
-                }
-            })
-            .map_err(|e| CaramUiError::Io {
-                context: "Vẽ khung hình TUI".to_string(),
-                source: e,
-            })?;
-
-        if event::poll(Duration::from_millis(200)).map_err(|e| CaramUiError::Io {
-            context: "Đọc sự kiện phím".to_string(),
-            source: e,
-        })? {
-            if let Event::Key(key) = event::read().map_err(|e| CaramUiError::Io {
-                context: "Nhận phím nhấn".to_string(),
-                source: e,
-            })? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    break;
-                }
-            }
-        }
+    if is_tty && io::stdin().is_terminal() {
+        let _ = write!(out, "Nhấn Enter để thoát...");
+        let _ = out.flush();
+        let mut buf = String::new();
+        let _ = io::stdin().lock().read_line(&mut buf);
     }
     Ok(())
 }
