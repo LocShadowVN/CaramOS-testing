@@ -1,4 +1,4 @@
-use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
+use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -248,7 +248,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&nemo_actions)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),

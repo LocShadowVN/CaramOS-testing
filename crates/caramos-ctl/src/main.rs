@@ -24,7 +24,7 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{symlink, PermissionsExt};
 
 #[derive(Debug, Error)]
 pub enum CaramCtlError {
