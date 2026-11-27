@@ -1,4 +1,4 @@
-use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
+use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,9 @@ fn is_valid_upstream_wallpaper(path: &Path) -> bool {
             lower.as_str(),
             "bullet.png" | "entry.png" | "lock.png" | "splash.png"
         );
-    let big_enough = fs::metadata(path).map(|m| m.len() >= 40_000).unwrap_or(false);
+    let big_enough = fs::metadata(path)
+        .map(|m| m.len() >= 40_000)
+        .unwrap_or(false);
     ok_ext && !junk && big_enough
 }
 
@@ -256,7 +258,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
                         writer,
                         "  ✔ Đã đồng bộ {} hình nền CaramOS 1.5.2 (mặc định: {}).",
                         copied_paths.len(),
-                        chosen.file_name().and_then(|n| n.to_str()).unwrap_or("default")
+                        chosen
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("default")
                     );
                 }
             }
@@ -286,7 +291,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let p = entry.path();
                 let in_icons_dir = p.to_string_lossy().to_ascii_lowercase().contains("/icons/");
                 let is_img = matches!(
-                    p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref(),
                     Some("png" | "svg")
                 );
                 if in_icons_dir && is_img {
@@ -297,7 +305,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                     }
                 }
             }
-            let _ = writeln!(writer, "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.", icon_count);
+            let _ = writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.",
+                icon_count
+            );
         }
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&ext);
@@ -321,7 +333,10 @@ fn configure_cinnamon_spices_and_desktop(rootfs: &Path) -> Result<(), CaramCtlEr
   "enable-autoscroll": { "type": "checkbox", "value": true }
 }
 "##;
-    atomic_write_file(&spices_dir.join("Cinnamenu@json/0.json"), cinnamenu_cfg.as_bytes())?;
+    atomic_write_file(
+        &spices_dir.join("Cinnamenu@json/0.json"),
+        cinnamenu_cfg.as_bytes(),
+    )?;
 
     // 2. Cấu hình grouped-window-list@cinnamon.org (đảo giữa): ghim đủ 6 ứng dụng CaramOS
     let gwl_cfg = r##"{
@@ -539,7 +554,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
             let _ = fs::copy(&logo, cinnamenu_dir.join("icon.png"));
             let _ = fs::copy(&logo, cinnamenu_dir.join("icon-symbolic.png"));
         }
-        let _ = writeln!(writer, "  ✔ Đã cài Start Menu Cinnamenu@json (đúng payload applet.js).");
+        let _ = writeln!(
+            writer,
+            "  ✔ Đã cài Start Menu Cinnamenu@json (đúng payload applet.js)."
+        );
     }
 
     let nemo_actions = rootfs.join("usr/share/nemo/actions");
@@ -556,7 +574,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&nemo_actions)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
