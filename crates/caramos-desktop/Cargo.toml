@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CaramOS 2.0 Native Rust GTK4/libadwaita App Center & Driver Check"
+description = "CaramOS 2.0 Native Rust GTK4/libadwaita App Center, Driver Check & Update Center"
 
 [dependencies]
 gtk4.workspace = true
@@ -24,3 +24,7 @@ path = "src/bin/caramos_app_center.rs"
 [[bin]]
 name = "caramos-driver-check"
 path = "src/bin/caramos_driver_check.rs"
+
+[[bin]]
+name = "caramos-update-center"
+path = "src/bin/caramos_update_center.rs"
