@@ -1,4 +1,4 @@
-use crate::{CaramUiError, atomic_write_bytes};
+use crate::{atomic_write_bytes, CaramUiError};
 use clap::Subcommand;
 use std::env;
 use std::fs;
@@ -67,9 +67,7 @@ fn spawn_detached(bin: &str, args: &[&str]) {
 }
 
 pub fn is_valid_hex_color(hex: &str) -> bool {
-    hex.len() == 7
-        && hex.starts_with('#')
-        && hex.bytes().skip(1).all(|b| b.is_ascii_hexdigit())
+    hex.len() == 7 && hex.starts_with('#') && hex.bytes().skip(1).all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn parse_wpctl_volume(output: &str) -> Option<(u8, bool)> {
@@ -140,9 +138,12 @@ fn read_battery_percent() -> Option<u8> {
 }
 
 fn is_dark_mode() -> bool {
-    cmd_stdout("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"])
-        .map(|s| s.contains("prefer-dark"))
-        .unwrap_or(false)
+    cmd_stdout(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "color-scheme"],
+    )
+    .map(|s| s.contains("prefer-dark"))
+    .unwrap_or(false)
 }
 
 fn read_power_profile() -> String {
@@ -198,12 +199,24 @@ fn toggle_dark_mode() {
     let next_dark = !is_dark_mode();
     if next_dark {
         gset("org.gnome.desktop.interface", "color-scheme", "prefer-dark");
-        let shell = pick_installed_dir("/usr/share/themes", &["CaramOS-Island-Dark", "Cinnamon-Delight", "Arc-Dark"], "cinnamon")
-            .unwrap_or_else(|| "CaramOS-Island-Dark".to_string());
-        let gtk = pick_installed_dir("/usr/share/themes", &["Arc-Dark", "Adwaita-dark", "Cinnamon-Delight"], "gtk-3.0")
-            .unwrap_or_else(|| "Adwaita-dark".to_string());
-        let icon = pick_installed_dir("/usr/share/icons", &["Tela-circle-dark", "Tela-circle", "Papirus-Dark", "Papirus"], "index.theme")
-            .unwrap_or_else(|| "Papirus".to_string());
+        let shell = pick_installed_dir(
+            "/usr/share/themes",
+            &["CaramOS-Island-Dark", "Cinnamon-Delight", "Arc-Dark"],
+            "cinnamon",
+        )
+        .unwrap_or_else(|| "CaramOS-Island-Dark".to_string());
+        let gtk = pick_installed_dir(
+            "/usr/share/themes",
+            &["Arc-Dark", "Adwaita-dark", "Cinnamon-Delight"],
+            "gtk-3.0",
+        )
+        .unwrap_or_else(|| "Adwaita-dark".to_string());
+        let icon = pick_installed_dir(
+            "/usr/share/icons",
+            &["Tela-circle-dark", "Tela-circle", "Papirus-Dark", "Papirus"],
+            "index.theme",
+        )
+        .unwrap_or_else(|| "Papirus".to_string());
         gset("org.cinnamon.theme", "name", &shell);
         gset("org.cinnamon.desktop.interface", "gtk-theme", &gtk);
         gset("org.gnome.desktop.interface", "gtk-theme", &gtk);
@@ -215,12 +228,20 @@ fn toggle_dark_mode() {
         }
     } else {
         gset("org.gnome.desktop.interface", "color-scheme", "default");
-        let shell = pick_installed_dir("/usr/share/themes", &["Cinnamon-Delight", "CaramOS-Island", "Arc"], "cinnamon")
-            .unwrap_or_else(|| "CaramOS-Island".to_string());
+        let shell = pick_installed_dir(
+            "/usr/share/themes",
+            &["Cinnamon-Delight", "CaramOS-Island", "Arc"],
+            "cinnamon",
+        )
+        .unwrap_or_else(|| "CaramOS-Island".to_string());
         let gtk = pick_installed_dir("/usr/share/themes", &["Cinnamon-Delight", "Arc"], "gtk-3.0")
             .unwrap_or_else(|| "Arc".to_string());
-        let icon = pick_installed_dir("/usr/share/icons", &["Tela-circle-light", "Tela-circle", "Papirus"], "index.theme")
-            .unwrap_or_else(|| "Papirus".to_string());
+        let icon = pick_installed_dir(
+            "/usr/share/icons",
+            &["Tela-circle-light", "Tela-circle", "Papirus"],
+            "index.theme",
+        )
+        .unwrap_or_else(|| "Papirus".to_string());
         gset("org.cinnamon.theme", "name", &shell);
         gset("org.cinnamon.desktop.interface", "gtk-theme", &gtk);
         gset("org.gnome.desktop.interface", "gtk-theme", &gtk);
@@ -243,12 +264,20 @@ fn find_themed_wallpaper(dark: bool) -> Option<String> {
         .collect();
     let target = if dark {
         entries.iter().find(|p| {
-            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+            let s = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             s.contains("indigo") || s.contains("night") || s.contains("dark")
         })
     } else {
         entries.iter().find(|p| {
-            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+            let s = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             s == "default.png" || s.contains("sage") || s.contains("light")
         })
     };
@@ -263,7 +292,10 @@ fn set_accent_color(hex: &str) -> Result<(), CaramUiError> {
         )));
     }
     let home = user_home();
-    atomic_write_bytes(&home.join(".config/caramos/accent.hex"), format!("{}\n", hex).as_bytes())?;
+    atomic_write_bytes(
+        &home.join(".config/caramos/accent.hex"),
+        format!("{}\n", hex).as_bytes(),
+    )?;
     let gtk_css = format!(
         "@define-color accent_bg_color {h};\n@define-color accent_color {h};\n@define-color accent_fg_color #ffffff;\n",
         h = hex
@@ -317,9 +349,15 @@ fn set_brightness(percent: u8) {
 
 fn toggle_night_light() -> Result<(), CaramUiError> {
     let marker = user_home().join(".config/caramos/night-light");
-    let currently_on = fs::read_to_string(&marker).map(|s| s.trim() == "1").unwrap_or(false);
+    let currently_on = fs::read_to_string(&marker)
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false);
     let next_on = !currently_on;
-    let gamma = if next_on { "1.0:0.86:0.70" } else { "1.0:1.0:1.0" };
+    let gamma = if next_on {
+        "1.0:0.86:0.70"
+    } else {
+        "1.0:1.0:1.0"
+    };
     if let Some(xr) = cmd_stdout("xrandr", &["--query"]) {
         for line in xr.lines() {
             if line.contains(" connected") {
@@ -391,7 +429,8 @@ pub fn run_post_install() -> Result<(), CaramUiError> {
         context: "Đọc /etc/passwd".to_string(),
         source: e,
     })?;
-    let lotus_service_exists = Path::new("/usr/lib/systemd/system/fcitx5-lotus-server@.service").exists()
+    let lotus_service_exists = Path::new("/usr/lib/systemd/system/fcitx5-lotus-server@.service")
+        .exists()
         || Path::new("/lib/systemd/system/fcitx5-lotus-server@.service").exists();
 
     for (username, home_dir) in parse_passwd_human_users(&passwd) {
@@ -403,7 +442,10 @@ pub fn run_post_install() -> Result<(), CaramUiError> {
         let _ = fs::remove_file(home_dir.join("Desktop/install-caramos.desktop"));
     }
     let _ = fs::remove_file("/etc/skel/Desktop/install-caramos.desktop");
-    let _ = run_quiet("systemctl", &["disable", "fcitx5-lotus-server@user.service"]);
+    let _ = run_quiet(
+        "systemctl",
+        &["disable", "fcitx5-lotus-server@user.service"],
+    );
     Ok(())
 }
 

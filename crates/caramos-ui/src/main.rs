@@ -43,7 +43,11 @@ pub enum CaramUiError {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "caramos-ui", version, about = "CaramOS 2.0 Branding, Control Backend, Theme Applier & OTA")]
+#[command(
+    name = "caramos-ui",
+    version,
+    about = "CaramOS 2.0 Branding, Control Backend, Theme Applier & OTA"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -78,7 +82,10 @@ enum Commands {
     PostInstall,
     /// Kiểm tra nhanh bản phát hành OTA dạng ANSI trên terminal
     Ota {
-        #[arg(long, default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest")]
+        #[arg(
+            long,
+            default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest"
+        )]
         endpoint: String,
         #[arg(long)]
         dry_run: bool,
@@ -91,7 +98,10 @@ pub(crate) fn atomic_write_bytes(dest: &Path, data: &[u8]) -> Result<(), CaramUi
 
 fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(), CaramUiError> {
     let parent = dest.parent().ok_or_else(|| {
-        CaramUiError::InvalidArgs(format!("Đường dẫn không có thư mục cha: {}", dest.display()))
+        CaramUiError::InvalidArgs(format!(
+            "Đường dẫn không có thư mục cha: {}",
+            dest.display()
+        ))
     })?;
     fs::create_dir_all(parent).map_err(|e| CaramUiError::Io {
         context: format!("Tạo thư mục '{}'", parent.display()),
@@ -111,9 +121,11 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
     })?;
     #[cfg(unix)]
     {
-        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| CaramUiError::Io {
-            context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
-            source: e,
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| {
+            CaramUiError::Io {
+                context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
+                source: e,
+            }
         })?;
     }
     #[cfg(not(unix))]
@@ -129,10 +141,11 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
 fn save_png_atomically(dest: &Path, img: &RgbaImage) -> Result<(), CaramUiError> {
     let mut bytes = Vec::new();
     let mut cursor = Cursor::new(&mut bytes);
-    img.write_to(&mut cursor, ImageFormat::Png).map_err(|e| CaramUiError::Image {
-        context: dest.display().to_string(),
-        detail: e.to_string(),
-    })?;
+    img.write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|e| CaramUiError::Image {
+            context: dest.display().to_string(),
+            detail: e.to_string(),
+        })?;
     atomic_write_bytes(dest, &bytes)
 }
 
@@ -446,10 +459,13 @@ fn build_caramos_branding_overlay(
     height: u32,
 ) -> Result<(), CaramUiError> {
     if width < 640 || height < 480 {
-        return Err(CaramUiError::InvalidArgs("Độ phân giải tối thiểu là 640x480".to_string()));
+        return Err(CaramUiError::InvalidArgs(
+            "Độ phân giải tối thiểu là 640x480".to_string(),
+        ));
     }
 
-    let wallpaper_bytes = if let Some(wp_path) = wallpaper_dir.and_then(discover_existing_wallpaper) {
+    let wallpaper_bytes = if let Some(wp_path) = wallpaper_dir.and_then(discover_existing_wallpaper)
+    {
         fs::read(&wp_path).map_err(|e| CaramUiError::Io {
             context: format!("Đọc hình nền '{}'", wp_path.display()),
             source: e,
@@ -458,15 +474,19 @@ fn build_caramos_branding_overlay(
         let fallback = render_fallback_wallpaper(width, height);
         let mut buf = Vec::new();
         let mut cur = Cursor::new(&mut buf);
-        fallback.write_to(&mut cur, ImageFormat::Png).map_err(|e| CaramUiError::Image {
-            context: "render_fallback_wallpaper".to_string(),
-            detail: e.to_string(),
-        })?;
+        fallback
+            .write_to(&mut cur, ImageFormat::Png)
+            .map_err(|e| CaramUiError::Image {
+                context: "render_fallback_wallpaper".to_string(),
+                detail: e.to_string(),
+            })?;
         buf
     };
 
     let logo_img = if let Some(lp) = assets_dir.and_then(discover_existing_logo) {
-        image::open(&lp).map(|i| i.to_rgba8()).unwrap_or_else(|_| render_fallback_logo(128))
+        image::open(&lp)
+            .map(|i| i.to_rgba8())
+            .unwrap_or_else(|_| render_fallback_logo(128))
     } else {
         render_fallback_logo(128)
     };
@@ -475,11 +495,20 @@ fn build_caramos_branding_overlay(
     let calamares_dir = output_root.join("etc/calamares/branding/caramos");
     let plymouth_dir = output_root.join("usr/share/plymouth/themes/caramos");
     atomic_write_bytes(&grub_dir.join("background.png"), &wallpaper_bytes)?;
-    atomic_write_bytes(&output_root.join("usr/share/backgrounds/caramos/default.png"), &wallpaper_bytes)?;
-    atomic_write_bytes(&output_root.join("usr/share/backgrounds/caramos-login.png"), &wallpaper_bytes)?;
+    atomic_write_bytes(
+        &output_root.join("usr/share/backgrounds/caramos/default.png"),
+        &wallpaper_bytes,
+    )?;
+    atomic_write_bytes(
+        &output_root.join("usr/share/backgrounds/caramos-login.png"),
+        &wallpaper_bytes,
+    )?;
     atomic_write_bytes(&calamares_dir.join("welcome.png"), &wallpaper_bytes)?;
 
-    save_png_atomically(&output_root.join("usr/share/pixmaps/caramos-logo.png"), &logo_img)?;
+    save_png_atomically(
+        &output_root.join("usr/share/pixmaps/caramos-logo.png"),
+        &logo_img,
+    )?;
     save_png_atomically(&calamares_dir.join("logo.png"), &logo_img)?;
     save_png_atomically(&plymouth_dir.join("logo.png"), &logo_img)?;
 
@@ -526,8 +555,14 @@ logo.sprite = Sprite(logo.image);
 logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
 logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
 "##;
-    atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
-    atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
+    atomic_write_bytes(
+        &plymouth_dir.join("caramos.plymouth"),
+        plymouth_desc.as_bytes(),
+    )?;
+    atomic_write_bytes(
+        &plymouth_dir.join("caramos.script"),
+        plymouth_script.as_bytes(),
+    )?;
 
     let calamares_desc = r##"---
 componentName: caramos
@@ -577,7 +612,10 @@ Presentation {
     }
 }
 "##;
-    atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
+    atomic_write_bytes(
+        &calamares_dir.join("branding.desc"),
+        calamares_desc.as_bytes(),
+    )?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
     let lightdm_conf = "[Seat:*]\nuser-session=cinnamon\ngreeter-session=slick-greeter\n";
@@ -593,8 +631,14 @@ show-hostname=true
 show-clock=true
 clock-format=%H:%M
 "##;
-    atomic_write_bytes(&output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"), lightdm_conf.as_bytes())?;
-    atomic_write_bytes(&output_root.join("etc/lightdm/slick-greeter.conf"), slick_conf.as_bytes())?;
+    atomic_write_bytes(
+        &output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"),
+        lightdm_conf.as_bytes(),
+    )?;
+    atomic_write_bytes(
+        &output_root.join("etc/lightdm/slick-greeter.conf"),
+        slick_conf.as_bytes(),
+    )?;
 
     // Island Dock 3 đảo nổi (48px + bo tròn 14px + xanh rừng DESIGN.md #2b6a44 / #3a855a)
     let island_light_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
@@ -641,8 +685,14 @@ clock-format=%H:%M
     -arrow-border-width: 1px;
 }
 "##;
-    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"), island_light_css.as_bytes())?;
-    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"), island_dark_css.as_bytes())?;
+    atomic_write_bytes(
+        &output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"),
+        island_light_css.as_bytes(),
+    )?;
+    atomic_write_bytes(
+        &output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"),
+        island_dark_css.as_bytes(),
+    )?;
 
     stage_control_center_applet(output_root)?;
 
@@ -786,7 +836,11 @@ fn fetch_ota_summary(endpoint: &str, dry_run: bool) -> String {
                 "Phiên bản mới nhất: {} ({})\n\n{}",
                 rel.tag_name,
                 rel.name,
-                if rel.body.trim().is_empty() { "Không có ghi chú phát hành." } else { rel.body.trim() }
+                if rel.body.trim().is_empty() {
+                    "Không có ghi chú phát hành."
+                } else {
+                    rel.body.trim()
+                }
             ),
             Err(e) => format!("Không đọc được JSON bản phát hành: {}", e),
         },
@@ -806,11 +860,24 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
         context: "Ghi OTA TUI".to_string(),
         source: e,
     })?;
-    writeln!(out, "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m")
-        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
-    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n{}\n", bar, summary)
-        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
-    out.flush().map_err(|e| CaramUiError::Io { context: "flush stdout".to_string(), source: e })?;
+    writeln!(
+        out,
+        "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m"
+    )
+    .map_err(|e| CaramUiError::Io {
+        context: "Ghi OTA TUI".to_string(),
+        source: e,
+    })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n{}\n", bar, summary).map_err(|e| {
+        CaramUiError::Io {
+            context: "Ghi OTA TUI".to_string(),
+            source: e,
+        }
+    })?;
+    out.flush().map_err(|e| CaramUiError::Io {
+        context: "flush stdout".to_string(),
+        source: e,
+    })?;
 
     if is_tty && io::stdin().is_terminal() {
         let _ = write!(out, "Nhấn Enter để thoát...");
@@ -824,9 +891,19 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Commands::Branding { output_root, wallpaper_dir, assets_dir, width, height } => {
-            build_caramos_branding_overlay(&output_root, wallpaper_dir.as_deref(), assets_dir.as_deref(), width, height)
-        }
+        Commands::Branding {
+            output_root,
+            wallpaper_dir,
+            assets_dir,
+            width,
+            height,
+        } => build_caramos_branding_overlay(
+            &output_root,
+            wallpaper_dir.as_deref(),
+            assets_dir.as_deref(),
+            width,
+            height,
+        ),
         Commands::ApplyTheme { force } => theme_apply::run_apply_theme(force),
         Commands::Control { action } => control::run_control_command(action),
         Commands::PostInstall => control::run_post_install(),
@@ -853,16 +930,46 @@ mod tests {
         let dir = tempdir().unwrap();
         build_caramos_branding_overlay(dir.path(), None, None, 1280, 720).unwrap();
 
-        assert!(dir.path().join("boot/grub/themes/caramos/background.png").is_file());
-        assert!(dir.path().join("etc/calamares/branding/caramos/branding.desc").is_file());
+        assert!(dir
+            .path()
+            .join("boot/grub/themes/caramos/background.png")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("etc/calamares/branding/caramos/branding.desc")
+            .is_file());
         assert!(dir.path().join("etc/lightdm/slick-greeter.conf").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-app-center.desktop").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-app-center-link.desktop").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-driver-check.desktop").is_file());
-        assert!(dir.path().join("usr/share/applications/caramos-update-center.desktop").is_file());
-        assert!(dir.path().join("etc/xdg/autostart/caramos-update-notifier.desktop").is_file());
-        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/metadata.json").is_file());
-        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js").is_file());
-        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/stylesheet.css").is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-app-center.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-app-center-link.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-driver-check.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/applications/caramos-update-center.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("etc/xdg/autostart/caramos-update-notifier.desktop")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/cinnamon/applets/caramos-control-center@caramos/metadata.json")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("usr/share/cinnamon/applets/caramos-control-center@caramos/stylesheet.css")
+            .is_file());
     }
 }
