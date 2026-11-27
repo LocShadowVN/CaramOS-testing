@@ -2,7 +2,7 @@
 # CaramOS 2.0 — Danh mục gói chuẩn Debian 13 (Trixie) đã kiểm chứng cho mmdebstrap
 # ==============================================================================
 
-# --- Nhân Linux, Live Boot (QEMU/USB) & Khởi động Hybrid UEFI/BIOS ---
+# --- Nhân Linux, Live Boot (QEMU/USB) & Khởi động Hybrid BIOS + UEFI/Secure Boot ---
 linux-image-amd64
 live-boot
 live-config
@@ -23,10 +23,13 @@ pciutils
 usbutils
 v4l-utils
 fontconfig
-grub-pc
+grub-common
+grub2-common
 grub-pc-bin
-grub-efi-amd64
 grub-efi-amd64-bin
+grub-efi-amd64-signed
+shim-signed
+efibootmgr
 os-prober
 plymouth
 plymouth-themes
@@ -75,7 +78,6 @@ gnome-system-monitor
 eog
 evince
 file-roller
-xarchiver
 
 # --- Trình duyệt, Flatpak, Mạng, Âm thanh, Codec & In ấn ---
 firefox-esr
