@@ -10,7 +10,7 @@
     unused_must_use
 )]
 
-use caramos_desktop::{CaramDesktopError, install_caramos_css, invoke_self_pkexec};
+use caramos_desktop::{install_caramos_css, invoke_self_pkexec, CaramDesktopError};
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
@@ -48,8 +48,15 @@ impl UpdateScan {
 
 #[derive(Debug)]
 enum UpgradeEvent {
-    Step { headline: String, log: String },
-    Done { ok: bool, detail: String, reboot_required: bool },
+    Step {
+        headline: String,
+        log: String,
+    },
+    Done {
+        ok: bool,
+        detail: String,
+        reboot_required: bool,
+    },
 }
 
 fn scan_pending_updates() -> UpdateScan {
@@ -84,7 +91,11 @@ fn scan_pending_updates() -> UpdateScan {
 
     let mut flatpak_items = Vec::new();
     if let Ok(out) = Command::new("flatpak")
-        .args(["remote-ls", "--updates", "--columns=application,name,version"])
+        .args([
+            "remote-ls",
+            "--updates",
+            "--columns=application,name,version",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -114,7 +125,10 @@ fn scan_pending_updates() -> UpdateScan {
         }
     }
 
-    UpdateScan { apt_items, flatpak_items }
+    UpdateScan {
+        apt_items,
+        flatpak_items,
+    }
 }
 
 fn run_privileged_upgrade() -> Result<(), CaramDesktopError> {
@@ -305,7 +319,10 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     log_tv.set_editable(false);
     log_tv.set_monospace(true);
     log_tv.set_wrap_mode(gtk4::WrapMode::WordChar);
-    let log_sc = gtk4::ScrolledWindow::builder().min_content_height(180).child(&log_tv).build();
+    let log_sc = gtk4::ScrolledWindow::builder()
+        .min_content_height(180)
+        .child(&log_tv)
+        .build();
     let log_exp = gtk4::Expander::new(Some("Xem nhật ký cập nhật"));
     log_exp.set_child(Some(&log_sc));
     prog_vbox.append(&prog_title);
@@ -374,7 +391,10 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                     let t = gtk4::Label::new(Some(&it.name));
                     t.set_xalign(0.0);
                     t.add_css_class("row-title");
-                    let s = gtk4::Label::new(Some(&format!("{} — {}", it.source_label, it.version_note)));
+                    let s = gtk4::Label::new(Some(&format!(
+                        "{} — {}",
+                        it.source_label, it.version_note
+                    )));
                     s.set_xalign(0.0);
                     s.set_wrap(true);
                     s.add_css_class("dim-label");
@@ -548,7 +568,11 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                             let mut end = log_d.end_iter();
                             log_d.insert(&mut end, &format!("{}\n", log));
                         }
-                        UpgradeEvent::Done { ok, detail, reboot_required } => {
+                        UpgradeEvent::Done {
+                            ok,
+                            detail,
+                            reboot_required,
+                        } => {
                             busy_d.set(false);
                             *hold_d.borrow_mut() = None;
                             refresh_d.set_sensitive(true);
