@@ -8,10 +8,8 @@ description = "CaramOS 2.0 Rust Branding Asset Stager (GRUB2, Plymouth, Calamare
 
 [dependencies]
 clap.workspace = true
-hex.workspace = true
 image.workspace = true
 serde.workspace = true
-sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
