@@ -24,7 +24,7 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[derive(Debug, Error)]
 pub enum CaramCtlError {
@@ -45,11 +45,7 @@ pub enum CaramCtlError {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "caramos-ctl",
-    version,
-    about = "CaramOS 2.0 Debian 13 ISO Builder & Pruner"
-)]
+#[command(name = "caramos-ctl", version, about = "CaramOS 2.0 Debian 13 ISO Builder & Pruner")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -137,10 +133,9 @@ pub fn copy_directory_tree_overlay(src: &Path, dst: &Path) -> Result<usize, Cara
     }
     let mut copied = 0usize;
     for entry in WalkDir::new(src).into_iter().filter_map(Result::ok) {
-        let rel = entry
-            .path()
-            .strip_prefix(src)
-            .map_err(|e| CaramCtlError::InvalidConfig(format!("Lỗi đường dẫn tương đối: {}", e)))?;
+        let rel = entry.path().strip_prefix(src).map_err(|e| {
+            CaramCtlError::InvalidConfig(format!("Lỗi đường dẫn tương đối: {}", e))
+        })?;
         if rel.as_os_str().is_empty() {
             continue;
         }
@@ -178,11 +173,7 @@ pub fn copy_directory_tree_overlay(src: &Path, dst: &Path) -> Result<usize, Cara
                 })?;
             }
             fs::copy(entry.path(), &target).map_err(|e| CaramCtlError::Io {
-                context: format!(
-                    "Chép '{}' -> '{}'",
-                    entry.path().display(),
-                    target.display()
-                ),
+                context: format!("Chép '{}' -> '{}'", entry.path().display(), target.display()),
                 source: e,
             })?;
             if let Ok(meta) = fs::metadata(entry.path()) {
@@ -218,9 +209,7 @@ fn parse_packages_file(path: &Path) -> Result<Vec<String>, CaramCtlError> {
         pkgs.push(trimmed.to_string());
     }
     if pkgs.is_empty() {
-        return Err(CaramCtlError::InvalidConfig(
-            "Danh mục packages.txt rỗng".to_string(),
-        ));
+        return Err(CaramCtlError::InvalidConfig("Danh mục packages.txt rỗng".to_string()));
     }
     Ok(pkgs)
 }
@@ -241,10 +230,7 @@ const KNOWN_LEGACY_RELPATHS: &[&str] = &[
 fn is_plymouth_bg_junk(name: &str) -> bool {
     name.starts_with("animation-")
         || name.starts_with("throbber-")
-        || matches!(
-            name,
-            "plymouth-logo.png" | "bullet.png" | "entry.png" | "lock.png" | "splash.png"
-        )
+        || matches!(name, "plymouth-logo.png" | "bullet.png" | "entry.png" | "lock.png" | "splash.png")
 }
 
 fn collect_legacy_paths(repo_root: &Path) -> Vec<PathBuf> {
@@ -258,12 +244,7 @@ fn collect_legacy_paths(repo_root: &Path) -> Vec<PathBuf> {
     let bg_dir = repo_root.join("config/includes.chroot/usr/share/backgrounds/caramos");
     if let Ok(rd) = fs::read_dir(&bg_dir) {
         for entry in rd.flatten() {
-            if entry
-                .file_name()
-                .to_str()
-                .map(is_plymouth_bg_junk)
-                .unwrap_or(false)
-            {
+            if entry.file_name().to_str().map(is_plymouth_bg_junk).unwrap_or(false) {
                 targets.push(entry.path());
             }
         }
@@ -275,20 +256,13 @@ fn collect_legacy_paths(repo_root: &Path) -> Vec<PathBuf> {
 fn run_prune(repo_root: &Path, execute: bool) -> Result<(), CaramCtlError> {
     let targets = collect_legacy_paths(repo_root);
     if targets.is_empty() {
-        println!(
-            "✔ Không phát hiện tệp di sản nào trong '{}'.",
-            repo_root.display()
-        );
+        println!("✔ Không phát hiện tệp di sản nào trong '{}'.", repo_root.display());
         return Ok(());
     }
     println!(
         "▶ Phát hiện {} mục di sản ({}):",
         targets.len(),
-        if execute {
-            "ĐANG XÓA"
-        } else {
-            "CHẾ ĐỘ XEM TRƯỚC"
-        }
+        if execute { "ĐANG XÓA" } else { "CHẾ ĐỘ XEM TRƯỚC" }
     );
     for path in targets {
         println!("  - {}", path.display());
@@ -340,13 +314,10 @@ struct IsoBuildPipeline {
 }
 
 fn run_cmd_checked(bin: &str, args: &[&str], label: &str) -> Result<(), CaramCtlError> {
-    let out = Command::new(bin)
-        .args(args)
-        .output()
-        .map_err(|e| CaramCtlError::Io {
-            context: format!("Chạy '{}'", label),
-            source: e,
-        })?;
+    let out = Command::new(bin).args(args).output().map_err(|e| CaramCtlError::Io {
+        context: format!("Chạy '{}'", label),
+        source: e,
+    })?;
     if out.status.success() {
         Ok(())
     } else {
@@ -376,20 +347,11 @@ fn run_chroot_if_present(
 fn is_pkg_installed_in_chroot(rootfs: &Path, pkg: &str) -> bool {
     let rootfs_s = rootfs.to_string_lossy();
     Command::new("chroot")
-        .args([
-            rootfs_s.as_ref(),
-            "/usr/bin/dpkg-query",
-            "-W",
-            "-f=${Status}",
-            pkg,
-        ])
+        .args([rootfs_s.as_ref(), "/usr/bin/dpkg-query", "-W", "-f=${Status}", pkg])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map(|o| {
-            o.status.success()
-                && String::from_utf8_lossy(&o.stdout).contains("install ok installed")
-        })
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("install ok installed"))
         .unwrap_or(false)
 }
 
@@ -469,11 +431,7 @@ fn install_fcitx5_lotus_in_chroot<W: Write>(rootfs: &Path, suite: &str, writer: 
                                 .status();
                         }
                         if is_pkg_installed_in_chroot(rootfs, "fcitx5-lotus") {
-                            let _ = writeln!(
-                                writer,
-                                "  ✔ Đã cài Fcitx5 Lotus từ kho APT chính thức ({}).",
-                                suite
-                            );
+                            let _ = writeln!(writer, "  ✔ Đã cài Fcitx5 Lotus từ kho APT chính thức ({}).", suite);
                             return true;
                         }
                         let _ = fs::remove_file(&list_path);
@@ -496,31 +454,19 @@ fn install_fcitx5_lotus_in_chroot<W: Write>(rootfs: &Path, suite: &str, writer: 
                 .iter()
                 .find(|a| {
                     let l = a.name.to_ascii_lowercase();
-                    l.ends_with(".deb")
-                        && l.contains("amd64")
-                        && l.contains(suite)
-                        && !l.contains("dbgsym")
+                    l.ends_with(".deb") && l.contains("amd64") && l.contains(suite) && !l.contains("dbgsym")
                 })
                 .or_else(|| {
                     rel.assets.iter().find(|a| {
                         let l = a.name.to_ascii_lowercase();
-                        l.ends_with(".deb")
-                            && l.contains("amd64")
-                            && l.contains("debian")
-                            && !l.contains("dbgsym")
+                        l.ends_with(".deb") && l.contains("amd64") && l.contains("debian") && !l.contains("dbgsym")
                     })
                 });
             if let Some(asset) = picked {
                 let tmp_deb = rootfs.join("tmp/fcitx5-lotus.deb");
-                if let Ok(dl) = agent
-                    .get(&asset.browser_download_url)
-                    .set("User-Agent", "caramos-ctl/2.0")
-                    .call()
-                {
+                if let Ok(dl) = agent.get(&asset.browser_download_url).set("User-Agent", "caramos-ctl/2.0").call() {
                     let mut data = Vec::new();
-                    if dl.into_reader().read_to_end(&mut data).is_ok()
-                        && atomic_write_file(&tmp_deb, &data).is_ok()
-                    {
+                    if dl.into_reader().read_to_end(&mut data).is_ok() && atomic_write_file(&tmp_deb, &data).is_ok() {
                         let _ = Command::new("chroot")
                             .args([rootfs_s.as_str(), "/usr/bin/apt-get", "update"])
                             .env("DEBIAN_FRONTEND", "noninteractive")
@@ -551,11 +497,7 @@ fn install_fcitx5_lotus_in_chroot<W: Write>(rootfs: &Path, suite: &str, writer: 
         }
     }
 
-    let _ = writeln!(
-        writer,
-        "  [WARN] Không cài được fcitx5-lotus cho {}; dùng fcitx5-bamboo mặc định.",
-        suite
-    );
+    let _ = writeln!(writer, "  [WARN] Không cài được fcitx5-lotus cho {}; dùng fcitx5-bamboo mặc định.", suite);
     false
 }
 
@@ -565,11 +507,7 @@ fn install_local_captdriver_debs<W: Write>(rootfs: &Path, writer: &mut W) {
         return;
     }
     let rootfs_s = rootfs.to_string_lossy().to_string();
-    for entry in WalkDir::new(capt_dir)
-        .max_depth(2)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    for entry in WalkDir::new(capt_dir).max_depth(2).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file()
             && entry.path().extension().and_then(|e| e.to_str()) == Some("deb")
         {
@@ -578,33 +516,20 @@ fn install_local_captdriver_debs<W: Write>(rootfs: &Path, writer: &mut W) {
                 if fs::copy(entry.path(), &dst).is_ok() {
                     let guest_deb = format!("/tmp/{}", name.to_string_lossy());
                     let _ = Command::new("chroot")
-                        .args([
-                            rootfs_s.as_str(),
-                            "/usr/bin/apt-get",
-                            "install",
-                            "-y",
-                            &guest_deb,
-                        ])
+                        .args([rootfs_s.as_str(), "/usr/bin/apt-get", "install", "-y", &guest_deb])
                         .env("DEBIAN_FRONTEND", "noninteractive")
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .status();
                     let _ = fs::remove_file(&dst);
-                    let _ = writeln!(
-                        writer,
-                        "  ✔ Đã cài gói máy in Canon CAPT cục bộ ({}).",
-                        name.to_string_lossy()
-                    );
+                    let _ = writeln!(writer, "  ✔ Đã cài gói máy in Canon CAPT cục bộ ({}).", name.to_string_lossy());
                 }
             }
         }
     }
 }
 
-fn write_fcitx5_profile_and_config(
-    rootfs: &Path,
-    lotus_installed: bool,
-) -> Result<(), CaramCtlError> {
+fn write_fcitx5_profile_and_config(rootfs: &Path, lotus_installed: bool) -> Result<(), CaramCtlError> {
     let im_name = if lotus_installed { "lotus" } else { "bamboo" };
     let skel_fcitx = rootfs.join("etc/skel/.config/fcitx5");
     let profile = format!(
@@ -638,12 +563,8 @@ DefaultPageSize=5
 "##;
     atomic_write_file(&skel_fcitx.join("config"), config.as_bytes())?;
 
-    let uinput_rule =
-        "KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\", OPTIONS+=\"static_node=uinput\"\n";
-    atomic_write_file(
-        &rootfs.join("etc/udev/rules.d/99-caramos-uinput.rules"),
-        uinput_rule.as_bytes(),
-    )?;
+    let uinput_rule = "KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\", OPTIONS+=\"static_node=uinput\"\n";
+    atomic_write_file(&rootfs.join("etc/udev/rules.d/99-caramos-uinput.rules"), uinput_rule.as_bytes())?;
     atomic_write_file(&rootfs.join("etc/modules-load.d/uinput.conf"), b"uinput\n")?;
 
     let autostart = r##"[Desktop Entry]
@@ -654,10 +575,7 @@ X-GNOME-Autostart-enabled=true
 NoDisplay=true
 OnlyShowIn=X-Cinnamon;
 "##;
-    atomic_write_file(
-        &rootfs.join("etc/xdg/autostart/caramos-fcitx5.desktop"),
-        autostart.as_bytes(),
-    )?;
+    atomic_write_file(&rootfs.join("etc/xdg/autostart/caramos-fcitx5.desktop"), autostart.as_bytes())?;
 
     if lotus_installed {
         let _ = run_chroot_if_present(
@@ -727,11 +645,7 @@ fn find_latest_boot_file(boot_dir: &Path, prefix: &str) -> Result<PathBuf, Caram
         .collect();
     matches.sort();
     matches.pop().ok_or_else(|| {
-        CaramCtlError::InvalidConfig(format!(
-            "Không tìm thấy '{}' trong '{}'",
-            prefix,
-            boot_dir.display()
-        ))
+        CaramCtlError::InvalidConfig(format!("Không tìm thấy '{}' trong '{}'", prefix, boot_dir.display()))
     })
 }
 
@@ -739,11 +653,7 @@ impl IsoBuildPipeline {
     fn new(config: BuildConfig) -> Self {
         let rootfs_dir = config.work_dir.join("rootfs");
         let iso_staging_dir = config.work_dir.join("iso");
-        Self {
-            config,
-            rootfs_dir,
-            iso_staging_dir,
-        }
+        Self { config, rootfs_dir, iso_staging_dir }
     }
 
     fn run<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
@@ -760,10 +670,7 @@ impl IsoBuildPipeline {
         let _ = writeln!(
             writer,
             "▶ [STAGE 1] Bootstrap Debian {} ({}) với {} gói (dry_run={})",
-            self.config.suite,
-            self.config.arch,
-            packages.len(),
-            self.config.dry_run
+            self.config.suite, self.config.arch, packages.len(), self.config.dry_run
         );
 
         if !self.config.dry_run {
@@ -792,14 +699,8 @@ impl IsoBuildPipeline {
         Ok(())
     }
 
-    fn configure_chroot_and_apply_overlay<W: Write>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), CaramCtlError> {
-        let _ = writeln!(
-            writer,
-            "▶ [STAGE 2] Áp overlay, nhị phân Rust, Fcitx5 Lotus & tài nguyên CaramOS..."
-        );
+    fn configure_chroot_and_apply_overlay<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
+        let _ = writeln!(writer, "▶ [STAGE 2] Áp overlay, nhị phân Rust, Fcitx5 Lotus & tài nguyên CaramOS...");
 
         if let Some(ref inc) = self.config.includes_dir {
             let count = copy_directory_tree_overlay(inc, &self.rootfs_dir)?;
@@ -807,12 +708,7 @@ impl IsoBuildPipeline {
         }
         for overlay in &self.config.extra_overlays {
             let count = copy_directory_tree_overlay(overlay, &self.rootfs_dir)?;
-            let _ = writeln!(
-                writer,
-                "  ✔ Đã sao chép {} tệp từ overlay '{}'.",
-                count,
-                overlay.display()
-            );
+            let _ = writeln!(writer, "  ✔ Đã sao chép {} tệp từ overlay '{}'.", count, overlay.display());
         }
 
         let bin_dir = self.rootfs_dir.join("usr/local/bin");
@@ -821,9 +717,7 @@ impl IsoBuildPipeline {
             source: e,
         })?;
         for bin in &self.config.stage_bins {
-            let Some(name) = bin.file_name() else {
-                continue;
-            };
+            let Some(name) = bin.file_name() else { continue };
             let dst = bin_dir.join(name);
             fs::copy(bin, &dst).map_err(|e| CaramCtlError::Io {
                 context: format!("Chép '{}'", bin.display()),
@@ -842,10 +736,7 @@ impl IsoBuildPipeline {
              SUPPORT_URL=\"https://github.com/LocShadowVN/CaramOS-testing\"\n",
             self.config.suite
         );
-        atomic_write_file(
-            &self.rootfs_dir.join("etc/os-release"),
-            os_release.as_bytes(),
-        )?;
+        atomic_write_file(&self.rootfs_dir.join("etc/os-release"), os_release.as_bytes())?;
 
         self.configure_vietnamese_caramos_defaults()?;
         configure_calamares_post_install(&self.rootfs_dir)?;
@@ -858,12 +749,7 @@ impl IsoBuildPipeline {
             let _ = run_chroot_if_present(
                 &self.rootfs_dir,
                 "/usr/bin/flatpak",
-                &[
-                    "remote-add",
-                    "--if-not-exists",
-                    "flathub",
-                    "https://dl.flathub.org/repo/flathub.flatpakrepo",
-                ],
+                &["remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"],
                 "flatpak remote-add flathub",
             );
             run_chroot_if_present(&self.rootfs_dir, "/usr/bin/fc-cache", &["-f"], "fc-cache")?;
@@ -883,12 +769,7 @@ impl IsoBuildPipeline {
         self.configure_cinnamon_caramos_desktop()?;
 
         if !self.config.dry_run {
-            run_chroot_if_present(
-                &self.rootfs_dir,
-                "/usr/bin/dconf",
-                &["update"],
-                "dconf update",
-            )?;
+            run_chroot_if_present(&self.rootfs_dir, "/usr/bin/dconf", &["update"], "dconf update")?;
             run_chroot_if_present(
                 &self.rootfs_dir,
                 "/usr/bin/glib-compile-schemas",
@@ -913,14 +794,19 @@ impl IsoBuildPipeline {
 
     fn configure_vietnamese_caramos_defaults(&self) -> Result<(), CaramCtlError> {
         let etc = self.rootfs_dir.join("etc");
+        atomic_write_file(&etc.join("hostname"), b"caramos\n")?;
         atomic_write_file(
-            &etc.join("locale.gen"),
-            b"vi_VN.UTF-8 UTF-8\nen_US.UTF-8 UTF-8\n",
+            &etc.join("hosts"),
+            b"127.0.0.1 localhost\n127.0.1.1 caramos\n::1 localhost ip6-localhost ip6-loopback\n",
         )?;
-        atomic_write_file(
-            &etc.join("default/locale"),
-            b"LANG=vi_VN.UTF-8\nLANGUAGE=vi_VN:vi\n",
-        )?;
+        let live_conf = r##"LIVE_HOSTNAME="caramos"
+LIVE_USERNAME="user"
+LIVE_USER_FULLNAME="CaramOS Live"
+LIVE_USER_DEFAULT_GROUPS="audio cdrom dip floppy video plugdev netdev powerdev scanner bluetooth input sudo"
+"##;
+        atomic_write_file(&etc.join("live/config.conf.d/10-caramos.conf"), live_conf.as_bytes())?;
+        atomic_write_file(&etc.join("locale.gen"), b"vi_VN.UTF-8 UTF-8\nen_US.UTF-8 UTF-8\n")?;
+        atomic_write_file(&etc.join("default/locale"), b"LANG=vi_VN.UTF-8\nLANGUAGE=vi_VN:vi\n")?;
         atomic_write_file(&etc.join("timezone"), b"Asia/Ho_Chi_Minh\n")?;
         atomic_write_file(&etc.join("skel/.xinputrc"), b"run_im fcitx5\n")?;
         atomic_write_file(
@@ -935,22 +821,10 @@ impl IsoBuildPipeline {
         let icons = self.rootfs_dir.join("usr/share/icons");
         let applets = self.rootfs_dir.join("usr/share/cinnamon/applets");
 
-        let shell_theme = pick_existing_theme(
-            &themes,
-            &["Cinnamon-Delight", "CaramOS-Island", "Arc"],
-            "cinnamon",
-        );
+        let shell_theme = pick_existing_theme(&themes, &["Cinnamon-Delight", "CaramOS-Island", "Arc"], "cinnamon");
         let gtk_theme = pick_existing_theme(&themes, &["Cinnamon-Delight", "Arc"], "gtk-3.0");
-        let icon_theme = pick_existing_theme(
-            &icons,
-            &["Tela-circle-light", "Tela-circle", "Papirus"],
-            "index.theme",
-        );
-        let cursor_theme = pick_existing_theme(
-            &icons,
-            &["Bibata-Modern-Classic", "breeze_cursors"],
-            "cursors",
-        );
+        let icon_theme = pick_existing_theme(&icons, &["Tela-circle-light", "Tela-circle", "Papirus"], "index.theme");
+        let cursor_theme = pick_existing_theme(&icons, &["Bibata-Modern-Classic", "breeze_cursors"], "cursors");
         let menu_applet = if applets.join("Cinnamenu@json").is_dir() {
             "Cinnamenu@json"
         } else {
@@ -962,11 +836,7 @@ impl IsoBuildPipeline {
         } else {
             "'panel1:right:0:systray@cinnamon.org:2', 'panel1:right:1:notifications@cinnamon.org:5', 'panel1:right:2:calendar@cinnamon.org:7', 'panel1:right:3:network@cinnamon.org:4', 'panel1:right:4:sound@cinnamon.org:6', 'panel1:right:5:power@cinnamon.org:8', 'panel1:right:6:cornerbar@cinnamon.org:9'"
         };
-        let (ui_font, title_font) = if self
-            .rootfs_dir
-            .join("usr/share/fonts/truetype/be-vietnam-pro")
-            .is_dir()
-        {
+        let (ui_font, title_font) = if self.rootfs_dir.join("usr/share/fonts/truetype/be-vietnam-pro").is_dir() {
             ("Be Vietnam Pro 10", "Be Vietnam Pro Semi-Bold 10")
         } else {
             ("Noto Sans 10", "Noto Sans Semi-Bold 10")
@@ -980,7 +850,7 @@ impl IsoBuildPipeline {
              [org/cinnamon/theme]\nname='{shell}'\n\n\
              [org/cinnamon/desktop/interface]\ngtk-theme='{gtk}'\nicon-theme='{icon}'\ncursor-theme='{cursor}'\nfont-name='{font}'\n\n\
              [org/cinnamon/desktop/wm/preferences]\ntheme='{gtk}'\ntitlebar-font='{title_font}'\nbutton-layout=':minimize,maximize,close'\n\n\
-             [org/cinnamon/applets/grouped-window-list]\npinned-apps=['firefox-esr.desktop','nemo.desktop','caramos-app-center.desktop','cinnamon-settings.desktop']\n",
+             [org/cinnamon/applets/grouped-window-list]\npinned-apps=['firefox-esr.desktop','nemo.desktop','caramos-app-center.desktop','caramos-driver-check.desktop','caramos-update-center.desktop','cinnamon-settings.desktop']\n",
             menu = menu_applet, right = right_applets, shell = shell_theme, gtk = gtk_theme,
             icon = icon_theme, cursor = cursor_theme, font = ui_font, title_font = title_font
         );
@@ -995,22 +865,15 @@ impl IsoBuildPipeline {
             cursor = cursor_theme, font = ui_font, title_font = title_font
         );
 
+        atomic_write_file(&self.rootfs_dir.join("etc/dconf/db/local.d/99-caramos-island"), dconf_island.as_bytes())?;
         atomic_write_file(
-            &self
-                .rootfs_dir
-                .join("etc/dconf/db/local.d/99-caramos-island"),
-            dconf_island.as_bytes(),
-        )?;
-        atomic_write_file(
-            &self
-                .rootfs_dir
-                .join("usr/share/glib-2.0/schemas/99-caramos-island.gschema.override"),
+            &self.rootfs_dir.join("usr/share/glib-2.0/schemas/99-caramos-island.gschema.override"),
             gschema_override.as_bytes(),
         )?;
         Ok(())
     }
 
-fn build_squashfs_and_iso<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
+    fn build_squashfs_and_iso<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
         let live_dir = self.iso_staging_dir.join("live");
         let grub_dir = self.iso_staging_dir.join("boot/grub");
         let grub_fonts = grub_dir.join("fonts");
@@ -1100,6 +963,7 @@ menuentry "CaramOS 2.0 (Chế độ đồ họa an toàn — nomodeset)" {
         run_cmd_checked("grub-mkrescue", &["-o", &iso_out, &stage_s, "--", "-volid", "CARAMOS_2_0"], "grub-mkrescue")?;
         Ok(())
     }
+}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -1127,15 +991,8 @@ mod tests {
     fn parse_packages_filters_comments_and_rejects_injection() {
         let dir = tempdir().unwrap();
         let ok_file = dir.path().join("packages.txt");
-        fs::write(
-            &ok_file,
-            "# comment\ncinnamon-core\nfirefox-esr # browser\n",
-        )
-        .unwrap();
-        assert_eq!(
-            parse_packages_file(&ok_file).unwrap(),
-            vec!["cinnamon-core", "firefox-esr"]
-        );
+        fs::write(&ok_file, "# comment\ncinnamon-core\nfirefox-esr # browser\n").unwrap();
+        assert_eq!(parse_packages_file(&ok_file).unwrap(), vec!["cinnamon-core", "firefox-esr"]);
         let bad_file = dir.path().join("bad.txt");
         fs::write(&bad_file, "vlc;rm -rf /\n").unwrap();
         assert!(parse_packages_file(&bad_file).is_err());
@@ -1163,23 +1020,11 @@ mod tests {
         let mut log = Vec::new();
         pipeline.run(&mut log).unwrap();
 
-        assert!(fs::read_to_string(work.join("rootfs/etc/os-release"))
-            .unwrap()
-            .contains("ID_LIKE=debian"));
-        assert!(!fs::read_to_string(work.join("rootfs/etc/default/locale"))
-            .unwrap()
-            .contains("LC_ALL="));
-        assert!(
-            fs::read_to_string(work.join("rootfs/etc/skel/.config/fcitx5/profile"))
-                .unwrap()
-                .contains("DefaultIM=lotus")
-        );
-        assert!(work
-            .join("rootfs/etc/calamares/modules/shellprocess-caramos.conf")
-            .is_file());
-        assert!(work
-            .join("rootfs/etc/skel/Desktop/install-caramos.desktop")
-            .is_file());
+        assert!(fs::read_to_string(work.join("rootfs/etc/os-release")).unwrap().contains("ID_LIKE=debian"));
+        assert!(!fs::read_to_string(work.join("rootfs/etc/default/locale")).unwrap().contains("LC_ALL="));
+        assert!(fs::read_to_string(work.join("rootfs/etc/skel/.config/fcitx5/profile")).unwrap().contains("DefaultIM=lotus"));
+        assert!(work.join("rootfs/etc/calamares/modules/shellprocess-caramos.conf").is_file());
+        assert!(work.join("rootfs/etc/skel/Desktop/install-caramos.desktop").is_file());
         assert!(work.join("iso/boot/grub/grub.cfg").is_file());
     }
 }
