@@ -4,13 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CaramOS 2.0 Memory-Safe System Controller, Hybrid ISO Build Orchestrator, and Atomic OTA Engine"
+description = "CaramOS 2.0 Rust System Orchestrator: Debian 13 ISO Pipeline & Legacy Pruner"
 
 [dependencies]
 clap.workspace = true
-hex.workspace = true
 serde.workspace = true
-sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
