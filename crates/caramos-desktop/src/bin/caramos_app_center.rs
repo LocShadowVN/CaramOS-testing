@@ -11,12 +11,12 @@
 )]
 
 use caramos_desktop::{
-    CARAMOS_APP_CATALOG, VNLF_APPS_URL, AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta,
-    InstallSource, StepSelectionMode, detect_installed_catalog_ids, download_direct_deb_to_tmp,
-    download_github_deb_to_tmp, fetch_flathub_app_meta, find_catalog_app_by_flathub_id,
-    format_size_mb, install_caramos_css, install_flatpak_app, invoke_self_pkexec,
-    is_flatpak_installed, open_external_url, parse_install_link, remove_flatpak_app,
-    run_privileged_apt_install, run_privileged_apt_remove,
+    detect_installed_catalog_ids, download_direct_deb_to_tmp, download_github_deb_to_tmp,
+    fetch_flathub_app_meta, find_catalog_app_by_flathub_id, format_size_mb, install_caramos_css,
+    install_flatpak_app, invoke_self_pkexec, is_flatpak_installed, open_external_url,
+    parse_install_link, remove_flatpak_app, run_privileged_apt_install, run_privileged_apt_remove,
+    AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta, InstallSource, StepSelectionMode,
+    CARAMOS_APP_CATALOG, VNLF_APPS_URL,
 };
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -204,7 +204,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     let root_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&adw::WindowTitle::new("Ứng dụng", "Chọn phần mềm quen thuộc cho CaramOS")));
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        "Ứng dụng",
+        "Chọn phần mềm quen thuộc cho CaramOS",
+    )));
     root_vbox.append(&header);
 
     let main_stack = gtk4::Stack::new();
@@ -282,7 +285,9 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     more_btn.add_css_class("flat");
     more_btn.add_css_class("more-apps-bar");
     let more_hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    let more_lbl = gtk4::Label::new(Some("Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net"));
+    let more_lbl = gtk4::Label::new(Some(
+        "Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net",
+    ));
     more_lbl.set_xalign(0.0);
     more_lbl.set_hexpand(true);
     more_lbl.set_wrap(true);
@@ -344,7 +349,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     log_view.set_editable(false);
     log_view.set_monospace(true);
     log_view.set_wrap_mode(gtk4::WrapMode::WordChar);
-    let log_scroll = gtk4::ScrolledWindow::builder().min_content_height(180).child(&log_view).build();
+    let log_scroll = gtk4::ScrolledWindow::builder()
+        .min_content_height(180)
+        .child(&log_view)
+        .build();
     let log_expander = gtk4::Expander::new(Some("Xem chi tiết nhật ký"));
     log_expander.set_child(Some(&log_scroll));
 
@@ -357,7 +365,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     main_stack.add_named(&prog_clamp, Some("progress"));
 
     // Trang 5: Hoàn tất
-    let done_page = adw::StatusPage::builder().icon_name("emblem-ok-symbolic").title("Hoàn tất").build();
+    let done_page = adw::StatusPage::builder()
+        .icon_name("emblem-ok-symbolic")
+        .title("Hoàn tất")
+        .build();
     let done_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
     done_actions.set_halign(gtk4::Align::Center);
     let back_to_list_btn = gtk4::Button::with_label("Quay lại danh sách");
@@ -460,15 +471,24 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
             glib::spawn_future_local(async move {
                 while let Ok(ev) = rx.recv().await {
                     match ev {
-                        WorkerEvent::Progress { fraction, headline, log_line } => {
+                        WorkerEvent::Progress {
+                            fraction,
+                            headline,
+                            log_line,
+                        } => {
                             prog_status_done.set_text(&headline);
                             let clamped = fraction.clamp(0.0, 1.0);
                             prog_bar_done.set_fraction(clamped);
-                            prog_bar_done.set_text(Some(&format!("{}%", (clamped * 100.0).round() as u32)));
+                            prog_bar_done
+                                .set_text(Some(&format!("{}%", (clamped * 100.0).round() as u32)));
                             let mut end = log_buffer_done.end_iter();
                             log_buffer_done.insert(&mut end, &format!("{}\n", log_line));
                         }
-                        WorkerEvent::Finished { succeeded, failed, installed_after } => {
+                        WorkerEvent::Finished {
+                            succeeded,
+                            failed,
+                            installed_after,
+                        } => {
                             {
                                 let st = &mut *state_done.borrow_mut();
                                 st.is_busy = false;
@@ -485,8 +505,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                                     format!("Đã xử lý: {}", succeeded.join(", ")),
                                 )
                             } else {
-                                let err_lines: Vec<String> =
-                                    failed.iter().map(|(n, e)| format!("• {}: {}", n, e)).collect();
+                                let err_lines: Vec<String> = failed
+                                    .iter()
+                                    .map(|(n, e)| format!("• {}: {}", n, e))
+                                    .collect();
                                 (
                                     "dialog-warning-symbolic",
                                     "Hoàn tất với một số lỗi".to_string(),
@@ -526,11 +548,17 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 summary_lbl.set_text("Chưa chọn ứng dụng nào để cài thêm");
                 install_btn.set_sensitive(false);
             } else {
-                summary_lbl.set_text(&format!("Đã chọn {} ứng dụng ({})", count, format_size_mb(total_mb)));
+                summary_lbl.set_text(&format!(
+                    "Đã chọn {} ứng dụng ({})",
+                    count,
+                    format_size_mb(total_mb)
+                ));
                 install_btn.set_sensitive(true);
             }
             prev_btn.set_sensitive(st.active_category_idx > 0 && st.search_query.is_empty());
-            next_btn.set_sensitive(st.active_category_idx + 1 < AppCategory::ALL.len() && st.search_query.is_empty());
+            next_btn.set_sensitive(
+                st.active_category_idx + 1 < AppCategory::ALL.len() && st.search_query.is_empty(),
+            );
         }
     });
 
@@ -562,11 +590,17 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 btn.set_active(query.is_empty() && idx == cat_idx);
             }
 
-            let active_cat = AppCategory::ALL.get(cat_idx).copied().unwrap_or(AppCategory::Office);
+            let active_cat = AppCategory::ALL
+                .get(cat_idx)
+                .copied()
+                .unwrap_or(AppCategory::Office);
             let filtered: Vec<&'static AppEntry> = if query.is_empty() {
                 page_title_lbl.set_text(active_cat.title());
                 page_sub_lbl.set_text(active_cat.subtitle());
-                CARAMOS_APP_CATALOG.iter().filter(|e| e.category == active_cat).collect()
+                CARAMOS_APP_CATALOG
+                    .iter()
+                    .filter(|e| e.category == active_cat)
+                    .collect()
             } else {
                 page_title_lbl.set_text("Kết quả tìm kiếm");
                 page_sub_lbl.set_text(&format!("Đang lọc theo từ khóa \"{}\"", query));
@@ -579,7 +613,8 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     .collect()
             };
 
-            let use_radio = query.is_empty() && active_cat.selection_mode() == StepSelectionMode::SingleOptional;
+            let use_radio = query.is_empty()
+                && active_cat.selection_mode() == StepSelectionMode::SingleOptional;
             let mut radio_anchor: Option<gtk4::CheckButton> = None;
 
             for entry in filtered {
@@ -606,7 +641,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                             let mut st = state_c.borrow_mut();
                             if btn.is_active() {
                                 if use_radio {
-                                    for other in CARAMOS_APP_CATALOG.iter().filter(|o| o.category == active_cat) {
+                                    for other in CARAMOS_APP_CATALOG
+                                        .iter()
+                                        .filter(|o| o.category == active_cat)
+                                    {
                                         st.selected_ids.remove(other.id);
                                     }
                                 }
@@ -688,7 +726,10 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     if btn.is_active() {
                         {
                             let mut st = state_n.borrow_mut();
-                            for other in CARAMOS_APP_CATALOG.iter().filter(|o| o.category == active_cat) {
+                            for other in CARAMOS_APP_CATALOG
+                                .iter()
+                                .filter(|o| o.category == active_cat)
+                            {
                                 st.selected_ids.remove(other.id);
                             }
                         }
@@ -935,17 +976,26 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     } else {
                         match fetch_flathub_app_meta(&id_bg) {
                             Ok(FlathubAppMeta {
-                                id, name, summary, developer_name, project_license, urls,
+                                id,
+                                name,
+                                summary,
+                                developer_name,
+                                project_license,
+                                urls,
                             }) => LinkLookupResult::Ready {
                                 already_installed: is_flatpak_installed(&id),
                                 app_id: id,
                                 title: name,
                                 summary,
-                                developer: developer_name.unwrap_or_else(|| "Cộng đồng Flathub".to_string()),
-                                licence: project_license.unwrap_or_else(|| "Theo trang Flathub".to_string()),
+                                developer: developer_name
+                                    .unwrap_or_else(|| "Cộng đồng Flathub".to_string()),
+                                licence: project_license
+                                    .unwrap_or_else(|| "Theo trang Flathub".to_string()),
                                 homepage: urls.get("homepage").cloned(),
                             },
-                            Err(e) => LinkLookupResult::Error { message: e.to_string() },
+                            Err(e) => LinkLookupResult::Error {
+                                message: e.to_string(),
+                            },
                         }
                     };
                     let _ = lu_tx.send_blocking(result);
@@ -954,7 +1004,13 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 if let Ok(res) = lu_rx.recv().await {
                     match res {
                         LinkLookupResult::Ready {
-                            app_id, title, summary, developer, licence, homepage, already_installed,
+                            app_id,
+                            title,
+                            summary,
+                            developer,
+                            licence,
+                            homepage,
+                            already_installed,
                         } => {
                             title_l.set_text(&title);
                             desc_l.set_text(&summary);
@@ -1098,7 +1154,10 @@ fn execute_batch_install(entries: Vec<&'static AppEntry>, tx: async_channel::Sen
     if !apt_targets.is_empty() {
         let _ = tx.send_blocking(WorkerEvent::Progress {
             fraction: 0.5,
-            headline: format!("Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...", apt_names.join(", ")),
+            headline: format!(
+                "Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...",
+                apt_names.join(", ")
+            ),
             log_line: format!("pkexec apt-get install {}", apt_targets.join(" ")),
         });
         match invoke_self_pkexec("--pkexec-install", &apt_targets) {
@@ -1278,7 +1337,8 @@ fn show_confirm_uninstall_dialog(
                     }
                     InstallSource::GithubDeb { remove_pkgs, .. }
                     | InstallSource::DirectDeb { remove_pkgs, .. } => {
-                        let pkgs: Vec<String> = remove_pkgs.iter().map(|s| (*s).to_string()).collect();
+                        let pkgs: Vec<String> =
+                            remove_pkgs.iter().map(|s| (*s).to_string()).collect();
                         invoke_self_pkexec("--pkexec-remove", &pkgs)
                     }
                 };
