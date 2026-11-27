@@ -1238,7 +1238,7 @@ fn show_confirm_uninstall_dialog(
     let dialog = adw::Window::builder()
         .transient_for(parent)
         .modal(true)
-        .title(&format!("Gỡ {}?", entry.name))
+        .title(format!("Gỡ {}?", entry.name))
         .default_width(420)
         .build();
 
