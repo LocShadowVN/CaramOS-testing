@@ -1313,3 +1313,54 @@ fn show_confirm_uninstall_dialog(
     dialog.set_content(Some(&vbox));
     dialog.present();
 }
+fn build_app_icon_widget(entry: &AppEntry) -> gtk4::Image {
+    let icon_dir = std::path::Path::new("/usr/share/caramos-app-center/icons");
+    let stems: &[&str] = match entry.id {
+        "onlyoffice" => &["onlyoffice", "onlyoffice-desktopeditors"],
+        "wps-office" => &["wps-office", "wps"],
+        "libreoffice" => &["libreoffice", "libreoffice-writer"],
+        "google-chrome" => &["google-chrome", "chrome"],
+        "coccoc" => &["coccoc", "coc-coc"],
+        "microsoft-edge" => &["microsoft-edge", "edge"],
+        "brave" => &["brave", "brave-browser"],
+        "firefox" => &["firefox", "firefox-esr"],
+        "zalo-full" => &["zalo-full", "zalo"],
+        "telegram" => &["telegram", "telegram-desktop"],
+        "zoom" => &["zoom"],
+        "teams" => &["teams", "teams-for-linux"],
+        "discord" => &["discord"],
+        "ms-fonts" => &["ms-fonts", "fonts"],
+        "thunderbird" => &["thunderbird"],
+        "obsidian" => &["obsidian"],
+        "rustdesk" => &["rustdesk"],
+        "openconnect" => &["openconnect", "vpn"],
+        "vlc" => &["vlc"],
+        "spotify" => &["spotify"],
+        "obs-studio" => &["obs-studio", "obs"],
+        "kdenlive" => &["kdenlive"],
+        "gimp" => &["gimp"],
+        "inkscape" => &["inkscape"],
+        "gcompris" => &["gcompris"],
+        "tuxpaint" => &["tuxpaint"],
+        "kolourpaint" => &["kolourpaint"],
+        "klavaro" => &["klavaro"],
+        "turbowarp" => &["turbowarp", "scratch"],
+        "thonny" => &["thonny"],
+        "geogebra" => &["geogebra"],
+        "stellarium" => &["stellarium"],
+        _ => &[entry.id],
+    };
+    for stem in stems {
+        for ext in ["png", "svg"] {
+            let candidate = icon_dir.join(format!("{}.{}", stem, ext));
+            if candidate.is_file() {
+                let img = gtk4::Image::from_file(&candidate);
+                img.set_pixel_size(40);
+                return img;
+            }
+        }
+    }
+    let img = gtk4::Image::from_icon_name(entry.icon_name);
+    img.set_pixel_size(40);
+    img
+}
