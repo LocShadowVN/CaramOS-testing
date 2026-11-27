@@ -10,6 +10,7 @@
     unused_must_use
 )]
 
+mod control;
 mod theme_apply;
 
 use clap::{Parser, Subcommand};
@@ -42,11 +43,7 @@ pub enum CaramUiError {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "caramos-ui",
-    version,
-    about = "CaramOS 2.0 Branding, Theme Applier & OTA TUI (Rust)"
-)]
+#[command(name = "caramos-ui", version, about = "CaramOS 2.0 Branding, Control Backend, Theme Applier & OTA")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -54,7 +51,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Dựng cây overlay nhận diện GRUB2, Plymouth, LightDM Slick Greeter, Calamares & Desktop
+    /// Dựng cây overlay GRUB2, Plymouth, Slick Greeter, Calamares, Island Dock & Control Center
     Branding {
         #[arg(long)]
         output_root: PathBuf,
@@ -72,12 +69,16 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Kiểm tra cập nhật OTA dạng TUI ANSI trên terminal
+    /// Backend Rust điều khiển hệ thống cho applet Control Center trên thanh tác vụ
+    Control {
+        #[command(subcommand)]
+        action: control::ControlAction,
+    },
+    /// Hoàn tất cấu hình người dùng mới (fcitx5-lotus-server + quyền uinput) sau khi cài Calamares
+    PostInstall,
+    /// Kiểm tra nhanh bản phát hành OTA dạng ANSI trên terminal
     Ota {
-        #[arg(
-            long,
-            default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest"
-        )]
+        #[arg(long, default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest")]
         endpoint: String,
         #[arg(long)]
         dry_run: bool,
@@ -90,10 +91,7 @@ pub(crate) fn atomic_write_bytes(dest: &Path, data: &[u8]) -> Result<(), CaramUi
 
 fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(), CaramUiError> {
     let parent = dest.parent().ok_or_else(|| {
-        CaramUiError::InvalidArgs(format!(
-            "Đường dẫn không có thư mục cha: {}",
-            dest.display()
-        ))
+        CaramUiError::InvalidArgs(format!("Đường dẫn không có thư mục cha: {}", dest.display()))
     })?;
     fs::create_dir_all(parent).map_err(|e| CaramUiError::Io {
         context: format!("Tạo thư mục '{}'", parent.display()),
@@ -104,7 +102,7 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
         source: e,
     })?;
     tmp.write_all(data).map_err(|e| CaramUiError::Io {
-        context: format!("Ghi dữ liệu vào '{}'", dest.display()),
+        context: format!("Ghi '{}'", dest.display()),
         source: e,
     })?;
     tmp.as_file().sync_all().map_err(|e| CaramUiError::Io {
@@ -113,18 +111,16 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
     })?;
     #[cfg(unix)]
     {
-        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| {
-            CaramUiError::Io {
-                context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
-                source: e,
-            }
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| CaramUiError::Io {
+            context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
+            source: e,
         })?;
     }
     #[cfg(not(unix))]
     let _ = mode;
 
     tmp.persist(dest).map_err(|e| CaramUiError::Io {
-        context: format!("Lưu tệp '{}'", dest.display()),
+        context: format!("Lưu '{}'", dest.display()),
         source: e.error,
     })?;
     Ok(())
@@ -133,11 +129,10 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
 fn save_png_atomically(dest: &Path, img: &RgbaImage) -> Result<(), CaramUiError> {
     let mut bytes = Vec::new();
     let mut cursor = Cursor::new(&mut bytes);
-    img.write_to(&mut cursor, ImageFormat::Png)
-        .map_err(|e| CaramUiError::Image {
-            context: dest.display().to_string(),
-            detail: e.to_string(),
-        })?;
+    img.write_to(&mut cursor, ImageFormat::Png).map_err(|e| CaramUiError::Image {
+        context: dest.display().to_string(),
+        detail: e.to_string(),
+    })?;
     atomic_write_bytes(dest, &bytes)
 }
 
@@ -223,6 +218,226 @@ fn render_fallback_logo(size: u32) -> RgbaImage {
     img
 }
 
+fn stage_control_center_applet(output_root: &Path) -> Result<(), CaramUiError> {
+    let dir = output_root.join("usr/share/cinnamon/applets/caramos-control-center@caramos");
+
+    let metadata = r##"{
+  "uuid": "caramos-control-center@caramos",
+  "name": "Trung tâm Điều khiển CaramOS",
+  "description": "Bảng điều khiển nhanh Giao diện, 8 màu nhấn, Ánh sáng đêm, Nguồn, Âm lượng và Độ sáng (Backend Rust)",
+  "icon": "preferences-system-symbolic",
+  "max-instances": 1
+}
+"##;
+
+    let stylesheet = r##".caramos-cc-grid { spacing: 8px; padding: 6px 12px; }
+.caramos-cc-pill {
+    border-radius: 10px;
+    padding: 8px 12px;
+    background-color: rgba(128, 128, 128, 0.14);
+    font-weight: 600;
+}
+.caramos-cc-pill:hover { background-color: rgba(43, 106, 68, 0.22); }
+.caramos-cc-pill-active {
+    background-color: #2b6a44;
+    color: #ffffff;
+}
+.caramos-cc-swatches { spacing: 8px; padding: 6px 12px; }
+.caramos-cc-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    border: 2px solid rgba(255, 255, 255, 0.65);
+}
+.caramos-cc-section {
+    font-weight: 600;
+    font-size: 9pt;
+    padding: 4px 12px 2px 12px;
+    opacity: 0.72;
+}
+"##;
+
+    let applet_js = r##"const Applet = imports.ui.applet;
+const PopupMenu = imports.ui.popupMenu;
+const St = imports.gi.St;
+const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
+
+const CTL = "/usr/local/bin/caramos-ui";
+const ACCENTS = [
+    ["Xanh rừng", "#2b6a44"],
+    ["Xanh lam", "#1d6fa5"],
+    ["Chàm", "#4b5cc4"],
+    ["Tím", "#7c4dff"],
+    ["Hồng", "#c23b75"],
+    ["Đỏ gạch", "#c04632"],
+    ["Cam đất", "#c46d23"],
+    ["Xám đá", "#4d6157"]
+];
+
+function spawnCtl(args) {
+    try {
+        GLib.spawn_async(null, [CTL, "control"].concat(args), null, GLib.SpawnFlags.SEARCH_PATH, null);
+    } catch (e) {
+        global.logError("CaramOS CC spawn error: " + e);
+    }
+}
+
+class CaramControlCenterApplet extends Applet.IconApplet {
+    constructor(metadata, orientation, panelHeight, instanceId) {
+        super(orientation, panelHeight, instanceId);
+        this.set_applet_icon_symbolic_name("emblem-system-symbolic");
+        this.set_applet_tooltip("Trung tâm Điều khiển CaramOS");
+
+        this.menuManager = new PopupMenu.PopupMenuManager(this);
+        this.menu = new Applet.AppletPopupMenu(this, orientation);
+        this.menuManager.addMenu(this.menu);
+
+        this._buildMenu();
+    }
+
+    _buildMenu() {
+        let topBox = new St.BoxLayout({ style_class: "caramos-cc-grid" });
+        this._darkBtn = this._makePill("Chế độ Tối", () => {
+            spawnCtl(["toggle-dark"]);
+            this._refreshLater();
+        });
+        this._nightBtn = this._makePill("Ánh sáng đêm", () => {
+            spawnCtl(["toggle-night-light"]);
+            this._refreshLater();
+        });
+        let shotBtn = this._makePill("Chụp ảnh", () => {
+            this.menu.close();
+            spawnCtl(["action", "screenshot"]);
+        });
+        topBox.add_actor(this._darkBtn);
+        topBox.add_actor(this._nightBtn);
+        topBox.add_actor(shotBtn);
+        this.menu.box.add_actor(topBox);
+
+        this._addSection("Màu nhấn CaramOS");
+        let swatchBox = new St.BoxLayout({ style_class: "caramos-cc-swatches" });
+        for (let [label, hex] of ACCENTS) {
+            let b = new St.Button({
+                style_class: "caramos-cc-swatch",
+                style: "background-color: " + hex + ";",
+                reactive: true,
+                can_focus: true
+            });
+            b.connect("clicked", () => spawnCtl(["set-accent", hex]));
+            swatchBox.add_actor(b);
+        }
+        this.menu.box.add_actor(swatchBox);
+
+        this._addSection("Chế độ nguồn");
+        let pwrBox = new St.BoxLayout({ style_class: "caramos-cc-grid" });
+        this._pwrBtns = {};
+        for (let [id, lbl] of [["power-saver", "Tiết kiệm"], ["balanced", "Cân bằng"], ["performance", "Hiệu năng"]]) {
+            let btn = this._makePill(lbl, () => {
+                spawnCtl(["set-power", id]);
+                this._refreshLater();
+            });
+            this._pwrBtns[id] = btn;
+            pwrBox.add_actor(btn);
+        }
+        this.menu.box.add_actor(pwrBox);
+
+        this._addSection("Âm lượng & Độ sáng");
+        this._volSlider = new PopupMenu.PopupSliderMenuItem(0.75);
+        this._volSlider.connect("value-changed", (s, val) => {
+            spawnCtl(["set-volume", String(Math.round(val * 100))]);
+        });
+        this.menu.addMenuItem(this._volSlider);
+
+        this._brightSlider = new PopupMenu.PopupSliderMenuItem(0.8);
+        this._brightSlider.connect("value-changed", (s, val) => {
+            spawnCtl(["set-brightness", String(Math.max(5, Math.round(val * 100)))]);
+        });
+        this.menu.addMenuItem(this._brightSlider);
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._addQuickItem("Trung tâm Ứng dụng", "apps");
+        this._addQuickItem("Trung tâm Cập nhật", "updates");
+        this._addQuickItem("Kiểm tra Driver", "drivers");
+        this._addQuickItem("Cài đặt Mạng", "network");
+        this._addQuickItem("Cài đặt Hệ thống", "settings");
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        let footBox = new St.BoxLayout({ style_class: "caramos-cc-grid" });
+        footBox.add_actor(this._makePill("Khóa", () => { this.menu.close(); spawnCtl(["action", "lock"]); }));
+        footBox.add_actor(this._makePill("Khởi động lại", () => { this.menu.close(); spawnCtl(["action", "reboot"]); }));
+        footBox.add_actor(this._makePill("Tắt máy", () => { this.menu.close(); spawnCtl(["action", "poweroff"]); }));
+        this.menu.box.add_actor(footBox);
+    }
+
+    _makePill(label, cb) {
+        let btn = new St.Button({ label: label, style_class: "caramos-cc-pill", reactive: true, can_focus: true });
+        btn.connect("clicked", cb);
+        return btn;
+    }
+
+    _addSection(text) {
+        this.menu.box.add_actor(new St.Label({ text: text, style_class: "caramos-cc-section" }));
+    }
+
+    _addQuickItem(label, actionName) {
+        let item = new PopupMenu.PopupMenuItem(label);
+        item.connect("activate", () => spawnCtl(["action", actionName]));
+        this.menu.addMenuItem(item);
+    }
+
+    _refreshLater() {
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+            this._refreshStatus();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _refreshStatus() {
+        try {
+            let proc = Gio.Subprocess.new([CTL, "control", "status"], Gio.SubprocessFlags.STDOUT_PIPE);
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                try {
+                    let [ok, stdout] = p.communicate_utf8_finish(res);
+                    if (!ok || !stdout) return;
+                    let st = JSON.parse(stdout.trim());
+                    this._darkBtn.set_style_class_name(st.dark ? "caramos-cc-pill caramos-cc-pill-active" : "caramos-cc-pill");
+                    this._nightBtn.set_style_class_name(st.night_light ? "caramos-cc-pill caramos-cc-pill-active" : "caramos-cc-pill");
+                    for (let k in this._pwrBtns) {
+                        this._pwrBtns[k].set_style_class_name(
+                            st.power === k ? "caramos-cc-pill caramos-cc-pill-active" : "caramos-cc-pill"
+                        );
+                    }
+                    this._volSlider.setValue((st.volume || 0) / 100.0);
+                    this._brightSlider.setValue((st.brightness || 100) / 100.0);
+                } catch (e) {
+                    global.logError("CaramOS CC parse error: " + e);
+                }
+            });
+        } catch (e) {
+            global.logError("CaramOS CC status error: " + e);
+        }
+    }
+
+    on_applet_clicked() {
+        this.menu.toggle();
+        if (this.menu.isOpen) {
+            this._refreshStatus();
+        }
+    }
+}
+
+function main(metadata, orientation, panelHeight, instanceId) {
+    return new CaramControlCenterApplet(metadata, orientation, panelHeight, instanceId);
+}
+"##;
+
+    atomic_write_bytes(&dir.join("metadata.json"), metadata.as_bytes())?;
+    atomic_write_bytes(&dir.join("stylesheet.css"), stylesheet.as_bytes())?;
+    atomic_write_bytes(&dir.join("applet.js"), applet_js.as_bytes())?;
+    Ok(())
+}
+
 fn build_caramos_branding_overlay(
     output_root: &Path,
     wallpaper_dir: Option<&Path>,
@@ -231,13 +446,10 @@ fn build_caramos_branding_overlay(
     height: u32,
 ) -> Result<(), CaramUiError> {
     if width < 640 || height < 480 {
-        return Err(CaramUiError::InvalidArgs(
-            "Độ phân giải tối thiểu là 640x480".to_string(),
-        ));
+        return Err(CaramUiError::InvalidArgs("Độ phân giải tối thiểu là 640x480".to_string()));
     }
 
-    let wallpaper_bytes = if let Some(wp_path) = wallpaper_dir.and_then(discover_existing_wallpaper)
-    {
+    let wallpaper_bytes = if let Some(wp_path) = wallpaper_dir.and_then(discover_existing_wallpaper) {
         fs::read(&wp_path).map_err(|e| CaramUiError::Io {
             context: format!("Đọc hình nền '{}'", wp_path.display()),
             source: e,
@@ -246,19 +458,15 @@ fn build_caramos_branding_overlay(
         let fallback = render_fallback_wallpaper(width, height);
         let mut buf = Vec::new();
         let mut cur = Cursor::new(&mut buf);
-        fallback
-            .write_to(&mut cur, ImageFormat::Png)
-            .map_err(|e| CaramUiError::Image {
-                context: "render_fallback_wallpaper".to_string(),
-                detail: e.to_string(),
-            })?;
+        fallback.write_to(&mut cur, ImageFormat::Png).map_err(|e| CaramUiError::Image {
+            context: "render_fallback_wallpaper".to_string(),
+            detail: e.to_string(),
+        })?;
         buf
     };
 
     let logo_img = if let Some(lp) = assets_dir.and_then(discover_existing_logo) {
-        image::open(&lp)
-            .map(|i| i.to_rgba8())
-            .unwrap_or_else(|_| render_fallback_logo(128))
+        image::open(&lp).map(|i| i.to_rgba8()).unwrap_or_else(|_| render_fallback_logo(128))
     } else {
         render_fallback_logo(128)
     };
@@ -267,20 +475,11 @@ fn build_caramos_branding_overlay(
     let calamares_dir = output_root.join("etc/calamares/branding/caramos");
     let plymouth_dir = output_root.join("usr/share/plymouth/themes/caramos");
     atomic_write_bytes(&grub_dir.join("background.png"), &wallpaper_bytes)?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/backgrounds/caramos/default.png"),
-        &wallpaper_bytes,
-    )?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/backgrounds/caramos-login.png"),
-        &wallpaper_bytes,
-    )?;
+    atomic_write_bytes(&output_root.join("usr/share/backgrounds/caramos/default.png"), &wallpaper_bytes)?;
+    atomic_write_bytes(&output_root.join("usr/share/backgrounds/caramos-login.png"), &wallpaper_bytes)?;
     atomic_write_bytes(&calamares_dir.join("welcome.png"), &wallpaper_bytes)?;
 
-    save_png_atomically(
-        &output_root.join("usr/share/pixmaps/caramos-logo.png"),
-        &logo_img,
-    )?;
+    save_png_atomically(&output_root.join("usr/share/pixmaps/caramos-logo.png"), &logo_img)?;
     save_png_atomically(&calamares_dir.join("logo.png"), &logo_img)?;
     save_png_atomically(&plymouth_dir.join("logo.png"), &logo_img)?;
 
@@ -327,14 +526,8 @@ logo.sprite = Sprite(logo.image);
 logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
 logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
 "##;
-    atomic_write_bytes(
-        &plymouth_dir.join("caramos.plymouth"),
-        plymouth_desc.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &plymouth_dir.join("caramos.script"),
-        plymouth_script.as_bytes(),
-    )?;
+    atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
+    atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
 
     let calamares_desc = r##"---
 componentName: caramos
@@ -384,10 +577,7 @@ Presentation {
     }
 }
 "##;
-    atomic_write_bytes(
-        &calamares_dir.join("branding.desc"),
-        calamares_desc.as_bytes(),
-    )?;
+    atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
     let lightdm_conf = "[Seat:*]\nuser-session=cinnamon\ngreeter-session=slick-greeter\n";
@@ -403,56 +593,66 @@ show-hostname=true
 show-clock=true
 clock-format=%H:%M
 "##;
-    atomic_write_bytes(
-        &output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"),
-        lightdm_conf.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &output_root.join("etc/lightdm/slick-greeter.conf"),
-        slick_conf.as_bytes(),
-    )?;
+    atomic_write_bytes(&output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"), lightdm_conf.as_bytes())?;
+    atomic_write_bytes(&output_root.join("etc/lightdm/slick-greeter.conf"), slick_conf.as_bytes())?;
 
+    // Island Dock 3 đảo nổi (48px + bo tròn 14px + xanh rừng DESIGN.md #2b6a44 / #3a855a)
     let island_light_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
-.panel-bottom { height: 48px; background-color: transparent; padding: 4px 10px; }
+.panel-bottom { height: 48px; background-color: transparent; padding: 4px 12px; }
 .panelLeft, .panelCenter, .panelRight {
-    background-color: rgba(248, 250, 248, 0.90);
-    border: 1px solid rgba(43, 106, 68, 0.18);
+    background-color: rgba(248, 250, 248, 0.92);
+    border: 1px solid rgba(43, 106, 68, 0.20);
     border-radius: 14px;
-    padding: 0 8px;
+    padding: 0 10px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
 }
+.grouped-window-list-item-box { border-radius: 10px; padding: 0 6px; transition-duration: 120ms; }
+.grouped-window-list-item-box:hover { background-color: rgba(43, 106, 68, 0.10); }
 .grouped-window-list-item-box:checked, .grouped-window-list-item-box:active {
     border-bottom: 3px solid #2b6a44;
-    background-color: rgba(43, 106, 68, 0.12);
-    border-radius: 10px;
+    background-color: rgba(43, 106, 68, 0.14);
+}
+.popup-menu-boxpointer {
+    -arrow-border-radius: 14px;
+    -arrow-background-color: rgba(250, 252, 250, 0.96);
+    -arrow-border-color: rgba(43, 106, 68, 0.18);
+    -arrow-border-width: 1px;
 }
 "##;
     let island_dark_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #eef3f0; }
-.panel-bottom { height: 48px; background-color: transparent; padding: 4px 10px; }
+.panel-bottom { height: 48px; background-color: transparent; padding: 4px 12px; }
 .panelLeft, .panelCenter, .panelRight {
-    background-color: rgba(24, 30, 27, 0.90);
-    border: 1px solid rgba(140, 207, 165, 0.18);
+    background-color: rgba(24, 30, 27, 0.92);
+    border: 1px solid rgba(140, 207, 165, 0.20);
     border-radius: 14px;
-    padding: 0 8px;
+    padding: 0 10px;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
 }
+.grouped-window-list-item-box { border-radius: 10px; padding: 0 6px; transition-duration: 120ms; }
+.grouped-window-list-item-box:hover { background-color: rgba(58, 133, 90, 0.18); }
 .grouped-window-list-item-box:checked, .grouped-window-list-item-box:active {
     border-bottom: 3px solid #3a855a;
-    background-color: rgba(58, 133, 90, 0.22);
-    border-radius: 10px;
+    background-color: rgba(58, 133, 90, 0.26);
+}
+.popup-menu-boxpointer {
+    -arrow-border-radius: 14px;
+    -arrow-background-color: rgba(26, 32, 29, 0.96);
+    -arrow-border-color: rgba(140, 207, 165, 0.18);
+    -arrow-border-width: 1px;
 }
 "##;
-    atomic_write_bytes(
-        &output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"),
-        island_light_css.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"),
-        island_dark_css.as_bytes(),
-    )?;
+    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"), island_light_css.as_bytes())?;
+    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"), island_dark_css.as_bytes())?;
+
+    stage_control_center_applet(output_root)?;
 
     let apps_dir = output_root.join("usr/share/applications");
     let autostart_dir = output_root.join("etc/xdg/autostart");
 
-    let app_center_desktop = r##"[Desktop Entry]
+    let desktop_files: &[(&str, &str)] = &[
+        (
+            "caramos-app-center.desktop",
+            r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Ứng dụng CaramOS
@@ -463,8 +663,11 @@ Icon=system-software-install
 Terminal=false
 Categories=System;Settings;
 StartupNotify=true
-"##;
-    let app_center_link_desktop = r##"[Desktop Entry]
+"##,
+        ),
+        (
+            "caramos-app-center-link.desktop",
+            r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Cài đặt ứng dụng CaramOS
@@ -473,8 +676,11 @@ Icon=system-software-install
 Terminal=false
 NoDisplay=true
 MimeType=x-scheme-handler/caramos-app;
-"##;
-    let driver_check_desktop = r##"[Desktop Entry]
+"##,
+        ),
+        (
+            "caramos-driver-check.desktop",
+            r##"[Desktop Entry]
 Type=Application
 Version=1.0
 Name=Kiểm tra Driver
@@ -485,49 +691,66 @@ Icon=preferences-system
 Terminal=false
 Categories=System;Settings;HardwareSettings;
 StartupNotify=true
-"##;
-    let app_center_firstboot = r##"[Desktop Entry]
+"##,
+        ),
+        (
+            "caramos-update-center.desktop",
+            r##"[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Trung tâm Cập nhật
+GenericName=Cập nhật hệ thống CaramOS
+Comment=Cập nhật hệ thống Debian 13 và ứng dụng Flathub an toàn
+Exec=/usr/local/bin/caramos-update-center
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true
+"##,
+        ),
+    ];
+    for (name, body) in desktop_files {
+        atomic_write_bytes_with_mode(&apps_dir.join(name), body.as_bytes(), 0o644)?;
+    }
+
+    let autostart_files: &[(&str, &str)] = &[
+        (
+            "caramos-app-center-firstboot.desktop",
+            r##"[Desktop Entry]
 Type=Application
 Name=CaramOS App Center First Boot
 Exec=/usr/local/bin/caramos-app-center --first-boot
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 OnlyShowIn=X-Cinnamon;
-"##;
-    let driver_check_autostart = r##"[Desktop Entry]
+"##,
+        ),
+        (
+            "caramos-driver-check-autostart.desktop",
+            r##"[Desktop Entry]
 Type=Application
 Name=CaramOS Driver Check Autostart
 Exec=/usr/local/bin/caramos-driver-check --autostart
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 OnlyShowIn=X-Cinnamon;
-"##;
-
-    atomic_write_bytes_with_mode(
-        &apps_dir.join("caramos-app-center.desktop"),
-        app_center_desktop.as_bytes(),
-        0o644,
-    )?;
-    atomic_write_bytes_with_mode(
-        &apps_dir.join("caramos-app-center-link.desktop"),
-        app_center_link_desktop.as_bytes(),
-        0o644,
-    )?;
-    atomic_write_bytes_with_mode(
-        &apps_dir.join("caramos-driver-check.desktop"),
-        driver_check_desktop.as_bytes(),
-        0o644,
-    )?;
-    atomic_write_bytes_with_mode(
-        &autostart_dir.join("caramos-app-center-firstboot.desktop"),
-        app_center_firstboot.as_bytes(),
-        0o644,
-    )?;
-    atomic_write_bytes_with_mode(
-        &autostart_dir.join("caramos-driver-check-autostart.desktop"),
-        driver_check_autostart.as_bytes(),
-        0o644,
-    )?;
+"##,
+        ),
+        (
+            "caramos-update-notifier.desktop",
+            r##"[Desktop Entry]
+Type=Application
+Name=CaramOS Update Notifier
+Exec=/usr/local/bin/caramos-update-center --check
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+OnlyShowIn=X-Cinnamon;
+"##,
+        ),
+    ];
+    for (name, body) in autostart_files {
+        atomic_write_bytes_with_mode(&autostart_dir.join(name), body.as_bytes(), 0o644)?;
+    }
 
     Ok(())
 }
@@ -563,11 +786,7 @@ fn fetch_ota_summary(endpoint: &str, dry_run: bool) -> String {
                 "Phiên bản mới nhất: {} ({})\n\n{}",
                 rel.tag_name,
                 rel.name,
-                if rel.body.trim().is_empty() {
-                    "Không có ghi chú phát hành."
-                } else {
-                    rel.body.trim()
-                }
+                if rel.body.trim().is_empty() { "Không có ghi chú phát hành." } else { rel.body.trim() }
             ),
             Err(e) => format!("Không đọc được JSON bản phát hành: {}", e),
         },
@@ -579,39 +798,19 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
     let summary = fetch_ota_summary(endpoint, dry_run);
     let mut out = io::stdout();
     let is_tty = out.is_terminal();
-
     if is_tty {
         let _ = write!(out, "\x1b[2J\x1b[H");
     }
-    let header_line = "══════════════════════════════════════════════════════════════";
-    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m", header_line).map_err(|e| {
-        CaramUiError::Io {
-            context: "Ghi tiêu đề OTA TUI".to_string(),
-            source: e,
-        }
-    })?;
-    writeln!(
-        out,
-        "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m"
-    )
-    .map_err(|e| CaramUiError::Io {
-        context: "Ghi tiêu đề OTA TUI".to_string(),
+    let bar = "══════════════════════════════════════════════════════════════";
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m", bar).map_err(|e| CaramUiError::Io {
+        context: "Ghi OTA TUI".to_string(),
         source: e,
     })?;
-    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n", header_line).map_err(|e| {
-        CaramUiError::Io {
-            context: "Ghi khung OTA TUI".to_string(),
-            source: e,
-        }
-    })?;
-    writeln!(out, "{}\n", summary).map_err(|e| CaramUiError::Io {
-        context: "Ghi nội dung OTA TUI".to_string(),
-        source: e,
-    })?;
-    out.flush().map_err(|e| CaramUiError::Io {
-        context: "flush stdout".to_string(),
-        source: e,
-    })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m")
+        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n{}\n", bar, summary)
+        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
+    out.flush().map_err(|e| CaramUiError::Io { context: "flush stdout".to_string(), source: e })?;
 
     if is_tty && io::stdin().is_terminal() {
         let _ = write!(out, "Nhấn Enter để thoát...");
@@ -625,20 +824,12 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Commands::Branding {
-            output_root,
-            wallpaper_dir,
-            assets_dir,
-            width,
-            height,
-        } => build_caramos_branding_overlay(
-            &output_root,
-            wallpaper_dir.as_deref(),
-            assets_dir.as_deref(),
-            width,
-            height,
-        ),
+        Commands::Branding { output_root, wallpaper_dir, assets_dir, width, height } => {
+            build_caramos_branding_overlay(&output_root, wallpaper_dir.as_deref(), assets_dir.as_deref(), width, height)
+        }
         Commands::ApplyTheme { force } => theme_apply::run_apply_theme(force),
+        Commands::Control { action } => control::run_control_command(action),
+        Commands::PostInstall => control::run_post_install(),
         Commands::Ota { endpoint, dry_run } => run_ota_tui(&endpoint, dry_run),
     };
 
@@ -658,38 +849,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn branding_emits_required_grub_calamares_slick_and_link_desktop() {
+    fn branding_emits_control_center_update_center_and_grub_calamares() {
         let dir = tempdir().unwrap();
         build_caramos_branding_overlay(dir.path(), None, None, 1280, 720).unwrap();
 
-        assert!(dir
-            .path()
-            .join("boot/grub/themes/caramos/background.png")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("boot/grub/themes/caramos/theme.txt")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("etc/calamares/branding/caramos/branding.desc")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("etc/calamares/branding/caramos/welcome.png")
-            .is_file());
+        assert!(dir.path().join("boot/grub/themes/caramos/background.png").is_file());
+        assert!(dir.path().join("etc/calamares/branding/caramos/branding.desc").is_file());
         assert!(dir.path().join("etc/lightdm/slick-greeter.conf").is_file());
-        assert!(dir
-            .path()
-            .join("usr/share/applications/caramos-app-center.desktop")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("usr/share/applications/caramos-app-center-link.desktop")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("usr/share/applications/caramos-driver-check.desktop")
-            .is_file());
+        assert!(dir.path().join("usr/share/applications/caramos-app-center.desktop").is_file());
+        assert!(dir.path().join("usr/share/applications/caramos-app-center-link.desktop").is_file());
+        assert!(dir.path().join("usr/share/applications/caramos-driver-check.desktop").is_file());
+        assert!(dir.path().join("usr/share/applications/caramos-update-center.desktop").is_file());
+        assert!(dir.path().join("etc/xdg/autostart/caramos-update-notifier.desktop").is_file());
+        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/metadata.json").is_file());
+        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js").is_file());
+        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/stylesheet.css").is_file());
     }
 }
