@@ -29,24 +29,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout CaramOS Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: false
 
-      - name: Install Rust Stable Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Install GTK4 & libadwaita Development Headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libgtk-4-dev libadwaita-1-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-4-dev libadwaita-1-dev
 
-      - name: Cache Cargo Dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
       - name: Auto-Format Rust Workspace (cargo fmt)
         run: |
@@ -62,7 +58,6 @@ jobs:
                 git push origin "HEAD:${GITHUB_REF_NAME}"
               fi
             else
-              echo "::warning::Mã nguồn Rust trên PR chưa format."
               git diff --stat -- '*.rs'
             fi
           fi
@@ -73,7 +68,7 @@ jobs:
       - name: Run Full Unit & Integration Test Suite
         run: cargo test --workspace --verbose
 
-      - name: Build Release Binaries (4 Rust Binaries)
+      - name: Build Release Binaries (5 Rust Binaries)
         run: cargo build --workspace --release
 
       - name: Upload Release Binaries for ISO Job
@@ -85,6 +80,7 @@ jobs:
             target/release/caramos-ui
             target/release/caramos-app-center
             target/release/caramos-driver-check
+            target/release/caramos-update-center
           retention-days: 1
 
       - name: Guard — Reject Tracked Binaries & Build Artifacts in Git
@@ -119,6 +115,7 @@ jobs:
             --stage-bin ./target/release/caramos-ui \
             --stage-bin ./target/release/caramos-app-center \
             --stage-bin ./target/release/caramos-driver-check \
+            --stage-bin ./target/release/caramos-update-center \
             --packages-file config/packages.txt \
             --output-iso /tmp/caramos-ci-work/CaramOS-2.0.0-debian-trixie-amd64.iso \
             --dry-run
@@ -137,27 +134,34 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup
           df -h
 
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: false
 
-      - name: Download Built Rust Binaries
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: caramos-rust-binaries
           path: target/release
 
-      - name: Make Rust Binaries Executable
-        run: chmod +x target/release/caramos-*
+      - run: chmod +x target/release/caramos-*
 
-      - name: Install ISO Build Dependencies (mmdebstrap, squashfs, grub-mkrescue)
+      - name: Install ISO Build Dependencies & Debian 13 Trixie GPG Keyring
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mmdebstrap squashfs-tools xorriso mtools dosfstools \
+            mmdebstrap debian-archive-keyring gnupg squashfs-tools xorriso mtools dosfstools \
             grub-common grub2-common grub-pc-bin grub-efi-amd64-bin \
             ca-certificates curl unzip xz-utils
+
+          rm -f /tmp/debian-trixie-keys.asc /tmp/debian-trixie-keyring.gpg
+          for key in archive-key-12.asc archive-key-13.asc archive-key-13-security.asc release-12.asc release-13.asc; do
+            curl -fsSL "https://ftp-master.debian.org/keys/${key}" >> /tmp/debian-trixie-keys.asc
+            echo "" >> /tmp/debian-trixie-keys.asc
+          done
+          gpg --batch --yes --dearmor -o /tmp/debian-trixie-keyring.gpg /tmp/debian-trixie-keys.asc
+          chmod 644 /tmp/debian-trixie-keyring.gpg
+          gpg --show-keys /tmp/debian-trixie-keyring.gpg
 
       - name: Prune Legacy Workspace Files & Stage Branding Overlay
         run: |
@@ -176,6 +180,7 @@ jobs:
           sudo ./target/release/caramos-ctl build \
             --arch amd64 \
             --suite trixie \
+            --keyring /tmp/debian-trixie-keyring.gpg \
             --work-dir work/build \
             --includes-dir config/includes.chroot \
             --extra-overlay work/branding \
@@ -183,6 +188,7 @@ jobs:
             --stage-bin ./target/release/caramos-ui \
             --stage-bin ./target/release/caramos-app-center \
             --stage-bin ./target/release/caramos-driver-check \
+            --stage-bin ./target/release/caramos-update-center \
             --packages-file config/packages.txt \
             --output-iso "$ISO_PATH"
           sudo chown -R "$(id -u):$(id -g)" work/iso-out
