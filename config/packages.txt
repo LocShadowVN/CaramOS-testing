@@ -7,6 +7,8 @@ linux-image-amd64
 live-boot
 live-config
 live-config-systemd
+user-setup
+accountsservice
 systemd-sysv
 dbus
 dbus-x11
