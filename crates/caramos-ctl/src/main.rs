@@ -1010,25 +1010,41 @@ impl IsoBuildPipeline {
         Ok(())
     }
 
-    fn build_squashfs_and_iso<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
+fn build_squashfs_and_iso<W: Write>(&self, writer: &mut W) -> Result<(), CaramCtlError> {
         let live_dir = self.iso_staging_dir.join("live");
         let grub_dir = self.iso_staging_dir.join("boot/grub");
+        let grub_fonts = grub_dir.join("fonts");
         fs::create_dir_all(&live_dir).map_err(|e| CaramCtlError::Io {
             context: format!("Tạo '{}'", live_dir.display()),
             source: e,
         })?;
-        fs::create_dir_all(&grub_dir).map_err(|e| CaramCtlError::Io {
-            context: format!("Tạo '{}'", grub_dir.display()),
+        fs::create_dir_all(&grub_fonts).map_err(|e| CaramCtlError::Io {
+            context: format!("Tạo '{}'", grub_fonts.display()),
             source: e,
         })?;
+
+        for font_src in [
+            self.rootfs_dir.join("usr/share/grub/unicode.pf2"),
+            PathBuf::from("/usr/share/grub/unicode.pf2"),
+        ] {
+            if font_src.is_file() {
+                let _ = fs::copy(&font_src, grub_fonts.join("unicode.pf2"));
+                break;
+            }
+        }
 
         let squashfs_path = live_dir.join("filesystem.squashfs");
         let grub_cfg = r##"set default=0
 set timeout=8
+insmod font
 insmod all_video
 insmod gfxterm
 insmod png
-terminal_output gfxterm
+insmod jpeg
+if loadfont /boot/grub/fonts/unicode.pf2 ; then
+    set gfxmode=auto
+    terminal_output gfxterm
+fi
 if [ -f /boot/grub/themes/caramos/theme.txt ]; then
     set theme=/boot/grub/themes/caramos/theme.txt
 fi
@@ -1045,17 +1061,9 @@ menuentry "CaramOS 2.0 (Chế độ đồ họa an toàn — nomodeset)" {
 "##;
         atomic_write_file(&grub_dir.join("grub.cfg"), grub_cfg.as_bytes())?;
 
-        let _ = writeln!(
-            writer,
-            "▶ [STAGE 3 & 4] Đóng gói '{}' -> '{}'",
-            squashfs_path.display(),
-            self.config.output_iso.display()
-        );
+        let _ = writeln!(writer, "▶ [STAGE 3 & 4] Đóng gói '{}' -> '{}'", squashfs_path.display(), self.config.output_iso.display());
         if self.config.dry_run {
-            let _ = writeln!(
-                writer,
-                "✔ Hoàn tất chế độ kiểm thử --dry-run (không tạo ảnh ISO)."
-            );
+            let _ = writeln!(writer, "✔ Hoàn tất chế độ kiểm thử --dry-run (không tạo ảnh ISO).");
             return Ok(());
         }
 
@@ -1078,11 +1086,7 @@ menuentry "CaramOS 2.0 (Chế độ đồ họa an toàn — nomodeset)" {
 
         let rootfs_s = self.rootfs_dir.to_string_lossy().to_string();
         let sq_s = squashfs_path.to_string_lossy().to_string();
-        run_cmd_checked(
-            "mksquashfs",
-            &[&rootfs_s, &sq_s, "-comp", "zstd", "-noappend"],
-            "mksquashfs",
-        )?;
+        run_cmd_checked("mksquashfs", &[&rootfs_s, &sq_s, "-comp", "zstd", "-noappend"], "mksquashfs")?;
 
         if let Some(parent) = self.config.output_iso.parent() {
             fs::create_dir_all(parent).map_err(|e| CaramCtlError::Io {
@@ -1093,14 +1097,9 @@ menuentry "CaramOS 2.0 (Chế độ đồ họa an toàn — nomodeset)" {
 
         let iso_out = self.config.output_iso.to_string_lossy().to_string();
         let stage_s = self.iso_staging_dir.to_string_lossy().to_string();
-        run_cmd_checked(
-            "grub-mkrescue",
-            &["-o", &iso_out, &stage_s, "--", "-volid", "CARAMOS_2_0"],
-            "grub-mkrescue",
-        )?;
+        run_cmd_checked("grub-mkrescue", &["-o", &iso_out, &stage_s, "--", "-volid", "CARAMOS_2_0"], "grub-mkrescue")?;
         Ok(())
     }
-}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
