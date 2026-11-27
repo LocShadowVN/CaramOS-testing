@@ -618,9 +618,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
             let mut radio_anchor: Option<gtk4::CheckButton> = None;
 
             for entry in filtered {
-                let is_installed = installed_snap.contains(entry.id) || entry.is_preinstalled();
-                let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-                row_box.set_valign(gtk4::Align::Center);
+                row_box.append(&build_app_icon_widget(entry));
 
                 if !is_installed {
                     let check = gtk4::CheckButton::new();
