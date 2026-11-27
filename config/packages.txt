@@ -1,11 +1,12 @@
 # ==============================================================================
-# CaramOS 2.0 — Danh mục gói nền Debian 13 (Trixie) cho mmdebstrap
-# Lưu ý: giữ base Debian thuần, ưu tiên trải nghiệm UI/UX giống CaramOS gốc.
+# CaramOS 2.0 — Danh mục gói chuẩn Debian 13 (Trixie) đã kiểm chứng cho mmdebstrap
 # ==============================================================================
 
-# --- Nhân Linux, Live Boot & Khởi động Hybrid UEFI/BIOS ---
+# --- Nhân Linux, Live Boot (QEMU/USB) & Khởi động Hybrid UEFI/BIOS ---
 linux-image-amd64
 live-boot
+live-config
+live-config-systemd
 systemd-sysv
 dbus
 dbus-x11
@@ -13,6 +14,8 @@ sudo
 locales
 tzdata
 ca-certificates
+gnupg
+acl
 curl
 unzip
 xz-utils
@@ -20,12 +23,18 @@ pciutils
 usbutils
 v4l-utils
 fontconfig
+grub-pc
 grub-pc-bin
+grub-efi-amd64
 grub-efi-amd64-bin
+os-prober
 plymouth
 plymouth-themes
 initramfs-tools
 earlyoom
+dosfstools
+exfatprogs
+ntfs-3g
 
 # --- Trình cài đặt đồ họa Calamares ---
 calamares
@@ -35,11 +44,15 @@ calamares-settings-debian
 cinnamon-core
 cinnamon-l10n
 nemo-fileroller
+gvfs-backends
+gvfs-fuse
 slick-greeter
 lightdm
 xorg
 xdg-utils
 xdg-user-dirs
+xdg-desktop-portal
+xdg-desktop-portal-gtk
 libnotify-bin
 xclip
 flameshot
@@ -47,7 +60,7 @@ copyq
 ddcutil
 polkitd
 pkexec
-policykit-1-gnome
+mate-polkit
 dconf-cli
 libglib2.0-bin
 libgtk-4-1
@@ -64,7 +77,7 @@ evince
 file-roller
 xarchiver
 
-# --- Trình duyệt, Flatpak & Hệ thống mạng/âm thanh/in ấn ---
+# --- Trình duyệt, Flatpak, Mạng, Âm thanh, Codec & In ấn ---
 firefox-esr
 firefox-esr-l10n-vi
 flatpak
@@ -75,25 +88,31 @@ blueman
 pipewire-audio
 wireplumber
 pavucontrol
+gstreamer1.0-plugins-good
+gstreamer1.0-plugins-ugly
+gstreamer1.0-libav
 cups
 system-config-printer
 
-# --- Bộ gõ Tiếng Việt (Fcitx5 + Lotus cài tự động từ GitHub Releases trong Stage 2) ---
+# --- Bộ gõ Tiếng Việt (Fcitx5 + Lotus cài trong Stage 2, Bamboo làm dự phòng gốc) ---
 fcitx5
+fcitx5-modules
+fcitx5-bamboo
 fcitx5-frontend-gtk3
 fcitx5-frontend-gtk4
 fcitx5-frontend-qt5
 fcitx5-frontend-qt6
 fcitx5-config-qt
-fcitx5-module-xorg
+python3-dbus
 im-config
 
-# --- Phông chữ & Firmware phần cứng cơ bản ---
+# --- Phông chữ & Firmware phần cứng ---
 fonts-dejavu-core
 fonts-noto-core
 fonts-noto-color-emoji
 fonts-liberation
 fonts-crosextra-carlito
+fonts-crosextra-caladea
 firmware-linux-free
 firmware-misc-nonfree
 firmware-iwlwifi
