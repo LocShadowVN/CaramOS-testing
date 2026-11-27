@@ -1,4 +1,4 @@
-name: CaramOS 2.0 Rust CI & Verification
+name: CaramOS 2.0 Rust CI & ISO Build
 
 on:
   push:
@@ -7,6 +7,11 @@ on:
     branches: ["main"]
   workflow_dispatch:
     inputs:
+      build_iso:
+        description: "Dựng ảnh ISO Debian 13 thật và tải lên Artifact để test QEMU"
+        required: false
+        default: true
+        type: boolean
       commit_legacy_cleanup:
         description: "Tự động git rm các file di sản Mint/Ubiquity/Python còn sót và commit"
         required: false
@@ -55,14 +60,11 @@ jobs:
               if ! git diff --cached --quiet; then
                 git commit -m "style: auto-format Rust code with rustfmt"
                 git push origin "HEAD:${GITHUB_REF_NAME}"
-                echo "✔ Đã tự động format và push lên nhánh ${GITHUB_REF_NAME}."
               fi
             else
-              echo "::warning::Mã nguồn Rust trên PR chưa format (đã format tạm trong workspace CI)."
+              echo "::warning::Mã nguồn Rust trên PR chưa format."
               git diff --stat -- '*.rs'
             fi
-          else
-            echo "✔ Toàn bộ mã nguồn Rust đã chuẩn rustfmt."
           fi
 
       - name: Enforce Strict Clippy Lints (Zero Panic / Zero Unsafe)
@@ -74,6 +76,17 @@ jobs:
       - name: Build Release Binaries (4 Rust Binaries)
         run: cargo build --workspace --release
 
+      - name: Upload Release Binaries for ISO Job
+        uses: actions/upload-artifact@v4
+        with:
+          name: caramos-rust-binaries
+          path: |
+            target/release/caramos-ctl
+            target/release/caramos-ui
+            target/release/caramos-app-center
+            target/release/caramos-driver-check
+          retention-days: 1
+
       - name: Guard — Reject Tracked Binaries & Build Artifacts in Git
         run: |
           set -euo pipefail
@@ -84,36 +97,10 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup Workspace — Dọn file di sản xóa sót trước Branding & Dry-Run
+      - name: Cleanup Workspace & Verify Branding + Dry-Run
         run: |
           set -euo pipefail
           ./target/release/caramos-ctl prune --repo-root . --execute || true
-          LEGACY_PATHS=(
-            ".gitmodules"
-            "caramos_vietnam_banner.png"
-            "packages/caramos-app-center"
-            "packages/caram-os-demo"
-            "config/archives/linuxmint.key.binary"
-            "config/archives/linuxmint.key.chroot"
-            "config/archives/linuxmint.pref.chroot"
-            "config/includes.chroot/etc/skel/.linuxmint"
-            "config/includes.chroot/usr/share/applications/ubiquity.desktop"
-            "config/includes.chroot/etc/os-release"
-          )
-          for p in "${LEGACY_PATHS[@]}"; do
-            rm -rf "$p"
-          done
-          BG_DIR="config/includes.chroot/usr/share/backgrounds/caramos"
-          if [ -d "$BG_DIR" ]; then
-            find "$BG_DIR" -maxdepth 1 -type f \( \
-              -name 'animation-*.png' -o -name 'throbber-*.png' -o -name 'plymouth-logo.png' \
-              -o -name 'bullet.png' -o -name 'entry.png' -o -name 'lock.png' -o -name 'splash.png' \
-            \) -delete
-          fi
-
-      - name: Verify Branding Staging & Dry-Run ISO Build
-        run: |
-          set -euo pipefail
           mkdir -p /tmp/caramos-ci-branding /tmp/caramos-ci-work
           ./target/release/caramos-ui branding \
             --output-root /tmp/caramos-ci-branding \
@@ -135,6 +122,82 @@ jobs:
             --packages-file config/packages.txt \
             --output-iso /tmp/caramos-ci-work/CaramOS-2.0.0-debian-trixie-amd64.iso \
             --dry-run
+
+  build-debian-iso:
+    name: Build Bootable Debian 13 ISO (QEMU Test Artifact)
+    needs: verify-rust-workspace
+    if: >
+      (github.event_name == 'workflow_dispatch' && inputs.build_iso == true) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'style: auto-format'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free Runner Disk Space (~25 GB for mmdebstrap + squashfs)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup
+          df -h
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Download Built Rust Binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: caramos-rust-binaries
+          path: target/release
+
+      - name: Make Rust Binaries Executable
+        run: chmod +x target/release/caramos-*
+
+      - name: Install ISO Build Dependencies (mmdebstrap, squashfs, grub-mkrescue)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mmdebstrap squashfs-tools xorriso mtools dosfstools \
+            grub-common grub2-common grub-pc-bin grub-efi-amd64-bin \
+            ca-certificates curl unzip xz-utils
+
+      - name: Prune Legacy Workspace Files & Stage Branding Overlay
+        run: |
+          set -euo pipefail
+          ./target/release/caramos-ctl prune --repo-root . --execute || true
+          mkdir -p work/branding work/iso-out
+          ./target/release/caramos-ui branding \
+            --output-root work/branding \
+            --wallpaper-dir config/includes.chroot/usr/share/backgrounds \
+            --assets-dir assets --width 1920 --height 1080
+
+      - name: Build Full Hybrid BIOS+UEFI CaramOS 2.0 ISO (Debian 13 Trixie)
+        run: |
+          set -euo pipefail
+          ISO_PATH="work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso"
+          sudo ./target/release/caramos-ctl build \
+            --arch amd64 \
+            --suite trixie \
+            --work-dir work/build \
+            --includes-dir config/includes.chroot \
+            --extra-overlay work/branding \
+            --stage-bin ./target/release/caramos-ctl \
+            --stage-bin ./target/release/caramos-ui \
+            --stage-bin ./target/release/caramos-app-center \
+            --stage-bin ./target/release/caramos-driver-check \
+            --packages-file config/packages.txt \
+            --output-iso "$ISO_PATH"
+          sudo chown -R "$(id -u):$(id -g)" work/iso-out
+          (cd work/iso-out && sha256sum CaramOS-2.0.0-debian-trixie-amd64.iso > CaramOS-2.0.0-debian-trixie-amd64.iso.sha256)
+          ls -lh work/iso-out
+          xorriso -indev "$ISO_PATH" -report_el_torito plain
+
+      - name: Upload CaramOS ISO & SHA256 Artifact for QEMU Testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaramOS-2.0.0-debian-trixie-amd64-iso
+          path: |
+            work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso
+            work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso.sha256
+          retention-days: 7
 
   cleanup-legacy-repo:
     name: Auto-Commit Legacy File Removal (Manual Dispatch)
