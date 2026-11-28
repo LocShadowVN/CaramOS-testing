@@ -764,8 +764,14 @@ fn configure_fastfetch_caramos_logo(rootfs: &Path) -> Result<(), CaramCtlError> 
         &rootfs.join("usr/share/fastfetch/logos/caramos.txt"),
         logo_ansi.as_bytes(),
     )?;
-    atomic_write_file(&rootfs.join("etc/fastfetch/config.jsonc"), fastfetch_cfg.as_bytes())?;
-    atomic_write_file(&rootfs.join("etc/xdg/fastfetch/config.jsonc"), fastfetch_cfg.as_bytes())?;
+    atomic_write_file(
+        &rootfs.join("etc/fastfetch/config.jsonc"),
+        fastfetch_cfg.as_bytes(),
+    )?;
+    atomic_write_file(
+        &rootfs.join("etc/xdg/fastfetch/config.jsonc"),
+        fastfetch_cfg.as_bytes(),
+    )?;
     atomic_write_file(
         &rootfs.join("etc/skel/.config/fastfetch/config.jsonc"),
         fastfetch_cfg.as_bytes(),
