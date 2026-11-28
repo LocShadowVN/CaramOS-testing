@@ -1,4 +1,4 @@
-use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
+use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -47,7 +47,6 @@ fn run_ok(bin: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Tìm đúng thư mục lõi bên trong gói Cinnamon Spice (vd: `<uuid>/files/<uuid>` chứa `metadata.json` hoặc `applet.js`).
 fn find_spice_payload_dir(root: &Path, uuid: &str) -> Option<PathBuf> {
     let action_file = format!("{}.nemo_action", uuid);
     let action_tpl = format!("{}.nemo_action.in", uuid);
@@ -65,7 +64,6 @@ fn find_spice_payload_dir(root: &Path, uuid: &str) -> Option<PathBuf> {
         .map(|e| e.into_path())
 }
 
-/// Tìm thư mục chứa trực tiếp một đường dẫn con cụ thể (vd: `cinnamon/cinnamon.css`).
 fn find_dir_containing(root: &Path, rel_child: &str) -> Option<PathBuf> {
     WalkDir::new(root)
         .into_iter()
@@ -74,7 +72,21 @@ fn find_dir_containing(root: &Path, rel_child: &str) -> Option<PathBuf> {
         .map(|e| e.into_path())
 }
 
-fn is_valid_upstream_wallpaper(path: &Path) -> bool {
+fn has_real_image_magic(path: &Path) -> bool {
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
+    let mut hdr = [0u8; 12];
+    if f.read(&mut hdr).unwrap_or(0) < 12 {
+        return false;
+    }
+    let is_png = hdr.get(..8) == Some(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    let is_jpg = hdr.get(..3) == Some(&[0xff, 0xd8, 0xff]);
+    let is_webp = hdr.get(..4) == Some(b"RIFF") && hdr.get(8..12) == Some(b"WEBP");
+    is_png || is_jpg || is_webp
+}
+
+fn is_real_scenic_wallpaper(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
@@ -83,21 +95,24 @@ fn is_valid_upstream_wallpaper(path: &Path) -> bool {
         || lower.ends_with(".jpg")
         || lower.ends_with(".jpeg")
         || lower.ends_with(".webp");
-    let junk = lower.starts_with("animation-")
+    // Bỏ qua các nền logo phẳng cũ (caramos-light/dark/bg) & khung hình Plymouth/tài liệu
+    let unwanted = lower.starts_with("animation-")
         || lower.starts_with("throbber-")
+        || lower.starts_with("caramos-light")
+        || lower.starts_with("caramos-dark")
+        || lower.starts_with("caramos-bg")
         || lower.contains("plymouth")
         || lower.contains("logo")
         || lower.contains("icon")
         || lower.contains("banner")
         || lower.contains("screenshot")
+        || lower.contains("slide")
         || matches!(
             lower.as_str(),
             "bullet.png" | "entry.png" | "lock.png" | "splash.png"
         );
-    let big_enough = fs::metadata(path)
-        .map(|m| m.len() >= 40_000)
-        .unwrap_or(false);
-    ok_ext && !junk && big_enough
+    let big_enough = fs::metadata(path).map(|m| m.len() >= 80_000).unwrap_or(false);
+    ok_ext && !unwanted && big_enough && has_real_image_magic(path)
 }
 
 fn install_spice_zip(
@@ -142,14 +157,12 @@ fn install_spice_zip(
     Ok(false)
 }
 
-/// Kéo bộ hình nền CaramOS 1.5.2 (Sage Mist, Indigo Night...), logo chính chủ từ `VN-Linux-Family/CaramOS`
-/// và toàn bộ bộ icon ứng dụng PNG/SVG thật từ `VN-Linux-Family/CaramOS-app-center` (KHÔNG lấy mã Python).
 fn sync_upstream_caramos_visuals<W: Write>(
     work_tmp: &Path,
     rootfs: &Path,
     writer: &mut W,
 ) -> Result<(), CaramCtlError> {
-    // A. Hình nền 2048x1152 & Logo chuẩn từ VN-Linux-Family/CaramOS
+    // A. Kéo logo chính chủ + bộ hình nền nghệ thuật (Sage Mist / Indigo Night...) từ VN-Linux-Family/CaramOS
     if let Ok(zip_path) = download_archive(
         "https://github.com/VN-Linux-Family/CaramOS/archive/refs/heads/main.zip",
         work_tmp,
@@ -160,7 +173,7 @@ fn sync_upstream_caramos_visuals<W: Write>(
         let zip_s = zip_path.to_string_lossy();
         let ext_s = ext.to_string_lossy();
         if run_ok("unzip", &["-qo", zip_s.as_ref(), "-d", ext_s.as_ref()]) {
-            let mut found_wallpapers: Vec<PathBuf> = Vec::new();
+            let mut scenic_wallpapers: Vec<PathBuf> = Vec::new();
             let mut found_logo: Option<PathBuf> = None;
 
             for entry in WalkDir::new(&ext).into_iter().filter_map(Result::ok) {
@@ -169,7 +182,7 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 }
                 let p = entry.path();
                 let path_lower = p.to_string_lossy().to_ascii_lowercase();
-                if path_lower.contains("xfce") {
+                if path_lower.contains("/docs/") || path_lower.contains("xfce") {
                     continue;
                 }
                 if found_logo.is_none()
@@ -180,10 +193,8 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 {
                     found_logo = Some(p.to_path_buf());
                 }
-                if (path_lower.contains("/backgrounds/") || path_lower.contains("/wallpapers/"))
-                    && is_valid_upstream_wallpaper(p)
-                {
-                    found_wallpapers.push(p.to_path_buf());
+                if is_real_scenic_wallpaper(p) {
+                    scenic_wallpapers.push(p.to_path_buf());
                 }
             }
 
@@ -202,46 +213,44 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let _ = writeln!(writer, "  ✔ Đã đồng bộ logo CaramOS chính chủ.");
             }
 
-            if !found_wallpapers.is_empty() {
-                let bg_dst = rootfs.join("usr/share/backgrounds/caramos");
-                let _ = fs::remove_dir_all(&bg_dst);
-                let _ = fs::create_dir_all(&bg_dst);
+            // Dọn nền logo phẳng cũ nếu có trong includes.chroot, giữ lại sage-mist.png & indigo-night.png từ caramos-ui
+            let bg_dst = rootfs.join("usr/share/backgrounds/caramos");
+            let _ = fs::create_dir_all(&bg_dst);
+            if let Ok(rd) = fs::read_dir(&bg_dst) {
+                for entry in rd.flatten() {
+                    let n = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                    if n.starts_with("caramos-light") || n.starts_with("caramos-dark") || n.starts_with("caramos-bg") {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
 
-                found_wallpapers.sort();
-                let mut copied_paths: Vec<PathBuf> = Vec::new();
-                for src in &found_wallpapers {
+            if !scenic_wallpapers.is_empty() {
+                scenic_wallpapers.sort();
+                let mut copied: Vec<PathBuf> = Vec::new();
+                for src in &scenic_wallpapers {
                     if let Some(name) = src.file_name() {
                         let target = bg_dst.join(name);
                         if fs::copy(src, &target).is_ok() {
-                            copied_paths.push(target);
+                            copied.push(target);
                         }
                     }
                 }
-
-                // Ưu tiên Sage Mist (hình nền sáng chuẩn CaramOS 1.5.2), tránh ảnh tối/indigo làm mặc định sáng
-                let default_wp = copied_paths
-                    .iter()
-                    .find(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|s| s.to_ascii_lowercase().contains("sage"))
-                            .unwrap_or(false)
-                    })
-                    .or_else(|| {
-                        copied_paths.iter().find(|p| {
-                            let s = p
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_ascii_lowercase();
-                            !s.contains("indigo") && !s.contains("night") && !s.contains("dark")
-                        })
-                    })
-                    .or_else(|| copied_paths.first());
-
-                if let Some(chosen) = default_wp {
+                if let Some(light_wp) = copied.iter().find(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_ascii_lowercase().contains("sage"))
+                        .unwrap_or(false)
+                }) {
+                    let _ = fs::copy(light_wp, bg_dst.join("default.png"));
+                }
+                if let Some(dark_wp) = copied.iter().find(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_ascii_lowercase().contains("indigo"))
+                        .unwrap_or(false)
+                }) {
                     for dst_rel in [
-                        "usr/share/backgrounds/caramos/default.png",
                         "usr/share/backgrounds/caramos-login.png",
                         "boot/grub/themes/caramos/background.png",
                         "etc/calamares/branding/caramos/welcome.png",
@@ -250,27 +259,17 @@ fn sync_upstream_caramos_visuals<W: Write>(
                         if let Some(parent) = dst.parent() {
                             let _ = fs::create_dir_all(parent);
                         }
-                        if dst != *chosen {
-                            let _ = fs::copy(chosen, &dst);
-                        }
+                        let _ = fs::copy(dark_wp, &dst);
                     }
-                    let _ = writeln!(
-                        writer,
-                        "  ✔ Đã đồng bộ {} hình nền CaramOS 1.5.2 (mặc định: {}).",
-                        copied_paths.len(),
-                        chosen
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("default")
-                    );
                 }
+                let _ = writeln!(writer, "  ✔ Đã bổ sung {} hình nền nghệ thuật từ CaramOS gốc.", copied.len());
             }
         }
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&ext);
     }
 
-    // B. Bộ icon PNG/SVG thật cho từng ứng dụng từ VN-Linux-Family/CaramOS-app-center
+    // B. Bộ icon thương hiệu PNG/SVG thật từ VN-Linux-Family/CaramOS-app-center
     if let Ok(zip_path) = download_archive(
         "https://github.com/VN-Linux-Family/CaramOS-app-center/archive/refs/heads/main.zip",
         work_tmp,
@@ -291,10 +290,7 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let p = entry.path();
                 let in_icons_dir = p.to_string_lossy().to_ascii_lowercase().contains("/icons/");
                 let is_img = matches!(
-                    p.extension()
-                        .and_then(|e| e.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref(),
+                    p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
                     Some("png" | "svg")
                 );
                 if in_icons_dir && is_img {
@@ -305,11 +301,7 @@ fn sync_upstream_caramos_visuals<W: Write>(
                     }
                 }
             }
-            let _ = writeln!(
-                writer,
-                "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.",
-                icon_count
-            );
+            let _ = writeln!(writer, "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.", icon_count);
         }
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&ext);
@@ -318,27 +310,114 @@ fn sync_upstream_caramos_visuals<W: Write>(
     Ok(())
 }
 
-fn configure_cinnamon_spices_and_desktop(rootfs: &Path) -> Result<(), CaramCtlError> {
-    let spices_dir = rootfs.join("etc/skel/.config/cinnamon/spices");
+/// Xóa hoàn toàn launcher "Install Debian" thừa, bật `branding: caramos` + slideshow CaramOS
+/// và khóa `packages.conf` để Calamares KHÔNG tải thêm LibreOffice hay gói ngoài.
+fn configure_calamares_and_desktop(rootfs: &Path) -> Result<(), CaramCtlError> {
+    // 1. Xóa triệt để cơ chế tự thả "Install Debian" của calamares-settings-debian
+    for rel in [
+        "etc/xdg/autostart/calamares-desktop-icon.desktop",
+        "usr/bin/add-calamares-desktop-icon",
+        "usr/share/applications/install-debian.desktop",
+        "usr/share/applications/calamares-install-debian.desktop",
+        "etc/skel/Desktop/install-debian.desktop",
+        "etc/skel/Desktop/calamares-install-debian.desktop",
+        "etc/skel/Desktop/Install Debian.desktop",
+        "etc/skel/Desktop/Files.desktop",
+        "etc/skel/Desktop/files.desktop",
+        "etc/skel/Desktop/nemo.desktop",
+    ] {
+        let _ = fs::remove_file(rootfs.join(rel));
+    }
 
-    // 1. Cấu hình Cinnamenu@json (góc trái thanh tác vụ): logo CaramOS thật, không hiện chữ thừa
+    // 2. Chuyển /etc/calamares/settings.conf sang branding: caramos & gắn shellprocess@caramos
+    let settings_path = rootfs.join("etc/calamares/settings.conf");
+    if let Ok(raw) = fs::read_to_string(&settings_path) {
+        let mut updated = raw.replace("branding: debian", "branding: caramos");
+        if !updated.contains("shellprocess@caramos") {
+            updated = updated.replace(
+                "  - umount\n",
+                "  - shellprocess@caramos\n  - umount\n",
+            );
+        }
+        let _ = atomic_write_file(&settings_path, updated.as_bytes());
+    }
+
+    // 3. Khóa /etc/calamares/modules/packages.conf: KHÔNG tải thêm LibreOffice, chỉ gỡ gói Live/Calamares
+    let packages_conf = r##"backend: apt
+update_db: false
+update_system: false
+
+operations:
+  - try_remove:
+      - live-boot
+      - live-config
+      - live-config-systemd
+      - calamares
+      - calamares-settings-debian
+"##;
+    atomic_write_file(
+        &rootfs.join("etc/calamares/modules/packages.conf"),
+        packages_conf.as_bytes(),
+    )?;
+
+    // 4. Lối tắt duy nhất "Cài đặt CaramOS 2.0" với logo CaramOS chuẩn + 3 ứng dụng CaramOS trên Desktop
+    let skel_desktop = rootfs.join("etc/skel/Desktop");
+    let _ = fs::create_dir_all(&skel_desktop);
+    let install_desktop = r##"[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Cài đặt CaramOS 2.0
+Comment=Cài đặt CaramOS 2.0 (Debian 13) lên ổ cứng
+Exec=pkexec /usr/bin/calamares
+Icon=/usr/share/pixmaps/caramos-logo.png
+Terminal=false
+Categories=System;
+"##;
+    let inst_path = skel_desktop.join("install-caramos.desktop");
+    atomic_write_file(&inst_path, install_desktop.as_bytes())?;
+    #[cfg(unix)]
+    {
+        let _ = fs::set_permissions(&inst_path, fs::Permissions::from_mode(0o755));
+    }
+
+    let apps_src = rootfs.join("usr/share/applications");
+    for app_desktop in [
+        "caramos-app-center.desktop",
+        "caramos-driver-check.desktop",
+        "caramos-update-center.desktop",
+    ] {
+        let src = apps_src.join(app_desktop);
+        let dst = skel_desktop.join(app_desktop);
+        if src.is_file() && fs::copy(&src, &dst).is_ok() {
+            #[cfg(unix)]
+            {
+                let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    // 5. Tinh gọn Start Menu (Cinnamenu@json): bỏ mục dư thừa (Places/Recents/Emoji), icon gọn đẹp
+    let spices_dir = rootfs.join("etc/skel/.config/cinnamon/spices");
     let cinnamenu_cfg = r##"{
   "menu-icon-custom": { "type": "checkbox", "value": true },
   "menu-icon": { "type": "iconfilechooser", "value": "/usr/share/pixmaps/caramos-logo.png" },
-  "menu-icon-size": { "type": "spinbutton", "value": 28 },
+  "menu-icon-size": { "type": "spinbutton", "value": 26 },
   "menu-label": { "type": "entry", "value": "" },
   "show-application-icons": { "type": "checkbox", "value": true },
   "show-category-icons": { "type": "checkbox", "value": true },
+  "show-places": { "type": "checkbox", "value": false },
+  "show-recents": { "type": "checkbox", "value": false },
+  "show-bookmarks": { "type": "checkbox", "value": false },
+  "show-emoji": { "type": "checkbox", "value": false },
+  "show-home-folder": { "type": "checkbox", "value": false },
+  "show-sidebar-items": { "type": "combobox", "value": 0 },
   "apps-grid-column-count": { "type": "spinbutton", "value": 4 },
+  "apps-grid-icon-size": { "type": "spinbutton", "value": 44 },
   "enable-autoscroll": { "type": "checkbox", "value": true }
 }
 "##;
-    atomic_write_file(
-        &spices_dir.join("Cinnamenu@json/0.json"),
-        cinnamenu_cfg.as_bytes(),
-    )?;
+    atomic_write_file(&spices_dir.join("Cinnamenu@json/0.json"), cinnamenu_cfg.as_bytes())?;
 
-    // 2. Cấu hình grouped-window-list@cinnamon.org (đảo giữa): ghim đủ 6 ứng dụng CaramOS
     let gwl_cfg = r##"{
   "pinned-apps": {
     "type": "generic",
@@ -360,36 +439,6 @@ fn configure_cinnamon_spices_and_desktop(rootfs: &Path) -> Result<(), CaramCtlEr
         &spices_dir.join("grouped-window-list@cinnamon.org/1.json"),
         gwl_cfg.as_bytes(),
     )?;
-
-    // 3. Dọn biểu tượng thừa trên Desktop ("Install Debian", "Files") và đặt lối tắt CaramOS chuẩn
-    let skel_desktop = rootfs.join("etc/skel/Desktop");
-    let _ = fs::create_dir_all(&skel_desktop);
-    for junk in [
-        "install-debian.desktop",
-        "Install Debian.desktop",
-        "Files.desktop",
-        "files.desktop",
-        "nemo.desktop",
-    ] {
-        let _ = fs::remove_file(skel_desktop.join(junk));
-    }
-    let _ = fs::remove_file(rootfs.join("usr/share/applications/install-debian.desktop"));
-
-    let apps_src = rootfs.join("usr/share/applications");
-    for app_desktop in [
-        "caramos-app-center.desktop",
-        "caramos-driver-check.desktop",
-        "caramos-update-center.desktop",
-    ] {
-        let src = apps_src.join(app_desktop);
-        let dst = skel_desktop.join(app_desktop);
-        if src.is_file() && fs::copy(&src, &dst).is_ok() {
-            #[cfg(unix)]
-            {
-                let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o755));
-            }
-        }
-    }
     Ok(())
 }
 
@@ -402,10 +451,9 @@ pub fn install_caramos_desktop_assets<W: Write>(
 
     let _ = writeln!(
         writer,
-        "▶ [CARAMOS ASSETS] Đồng bộ hình nền, logo, icon ứng dụng, Be Vietnam Pro, Cinnamon-Delight, Tela-circle, Bibata & Cinnamenu..."
+        "▶ [CARAMOS ASSETS] Đồng bộ tài nguyên CaramOS, Be Vietnam Pro, Cinnamon-Delight, Tela-circle, Bibata & Cinnamenu..."
     );
 
-    // 0. Hình nền 2048x1152, logo chính chủ & icon từng ứng dụng từ CaramOS gốc
     sync_upstream_caramos_visuals(&work_tmp, rootfs, writer)?;
 
     // 1. Phông Be Vietnam Pro
@@ -455,7 +503,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::remove_file(&tar_path);
     }
 
-    // 3. Theme Cinnamon-Delight (tìm đúng thư mục chứa cinnamon/cinnamon.css & ghép CSS 3 đảo nổi)
+    // 3. Theme Cinnamon-Delight + CSS 3 đảo nổi & nền Start Menu sạch (bỏ ám hồng)
     let delight_zip = download_archive(
         "https://github.com/DrMcC0y/Cinnamon-Delight/archive/refs/heads/main.zip",
         &work_tmp,
@@ -484,7 +532,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
 /* CARAMOS-ISLAND-DOCK */
 .panel-bottom { height: 48px; background-color: transparent; border: none; box-shadow: none; padding: 4px 12px; }
 .panelLeft, .panelCenter, .panelRight {
-    background-color: rgba(248, 250, 248, 0.90);
+    background-color: rgba(248, 250, 248, 0.92);
     border: 1px solid rgba(43, 106, 68, 0.18);
     border-radius: 14px;
     padding: 0 10px;
@@ -495,12 +543,20 @@ pub fn install_caramos_desktop_assets<W: Write>(
     background-color: rgba(43, 106, 68, 0.12);
     border-radius: 10px;
 }
+.menu, .popup-menu-boxpointer {
+    -arrow-border-radius: 14px;
+    -arrow-background-color: rgba(250, 252, 250, 0.96);
+    -arrow-border-color: rgba(43, 106, 68, 0.20);
+    -arrow-border-width: 1px;
+    background-color: rgba(250, 252, 250, 0.96);
+    color: #1f2923;
+}
 "##,
                         );
                         let _ = atomic_write_file(&css_path, css.as_bytes());
                     }
                 }
-                let _ = writeln!(writer, "  ✔ Đã cài theme Cinnamon-Delight + Island Dock.");
+                let _ = writeln!(writer, "  ✔ Đã cài theme Cinnamon-Delight + Island Dock + Menu sạch.");
             }
         }
         let _ = fs::remove_file(&zip_path);
@@ -539,7 +595,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         let _ = fs::remove_dir_all(&ext);
     }
 
-    // 5. Applet Cinnamenu@json (đúng payload files/Cinnamenu@json) & Nemo actions
+    // 5. Applet Cinnamenu@json & Nemo actions
     let applets_dst = rootfs.join("usr/share/cinnamon/applets");
     let _ = fs::create_dir_all(&applets_dst);
     if install_spice_zip(
@@ -554,10 +610,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
             let _ = fs::copy(&logo, cinnamenu_dir.join("icon.png"));
             let _ = fs::copy(&logo, cinnamenu_dir.join("icon-symbolic.png"));
         }
-        let _ = writeln!(
-            writer,
-            "  ✔ Đã cài Start Menu Cinnamenu@json (đúng payload applet.js)."
-        );
+        let _ = writeln!(writer, "  ✔ Đã cài Start Menu Cinnamenu@json.");
     }
 
     let nemo_actions = rootfs.join("usr/share/nemo/actions");
@@ -574,10 +627,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
@@ -615,8 +665,7 @@ pub fn install_caramos_desktop_assets<W: Write>(
         }
     }
 
-    // 7. Ghi cấu hình spice cho Cinnamenu, Grouped Window List & dọn Desktop
-    configure_cinnamon_spices_and_desktop(rootfs)?;
+    configure_calamares_and_desktop(rootfs)?;
 
     let _ = fs::remove_dir_all(&work_tmp);
     Ok(())
