@@ -1,6 +1,5 @@
-use crate::{atomic_write_bytes, CaramUiError};
+use crate::{CaramUiError, atomic_write_bytes, control};
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -11,46 +10,6 @@ fn pick_first_existing(base: &Path, names: &[&str], required_child: &str) -> Opt
         }
     }
     None
-}
-
-pub fn is_clean_wallpaper_filename(file_name: &str) -> bool {
-    let lower = file_name.to_ascii_lowercase();
-    let valid_ext = lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".webp");
-    let is_junk = lower.starts_with("animation-")
-        || lower.starts_with("throbber-")
-        || lower.contains("plymouth")
-        || lower.contains("logo")
-        || lower.contains("icon")
-        || matches!(
-            lower.as_str(),
-            "bullet.png" | "entry.png" | "lock.png" | "splash.png"
-        );
-    valid_ext && !is_junk
-}
-
-fn find_default_wallpaper_uri() -> Option<String> {
-    let dir = Path::new("/usr/share/backgrounds/caramos");
-    let default_png = dir.join("default.png");
-    if default_png.is_file() {
-        return Some(format!("file://{}", default_png.display()));
-    }
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(is_clean_wallpaper_filename)
-                    .unwrap_or(false)
-        })
-        .collect();
-    entries.sort();
-    entries.first().map(|p| format!("file://{}", p.display()))
 }
 
 fn has_be_vietnam_pro_font() -> bool {
@@ -71,7 +30,6 @@ fn gsettings_set(schema: &str, key: &str, value: &str) {
         .status();
 }
 
-/// Áp giao diện CaramOS chuẩn ở lần đăng nhập đầu tiên (thay thế script Bash `caramos-theme-apply`).
 pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
@@ -114,18 +72,10 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     gsettings_set("org.cinnamon.theme", "name", &shell_theme);
     gsettings_set("org.cinnamon.desktop.interface", "gtk-theme", &gtk_theme);
     gsettings_set("org.cinnamon.desktop.interface", "icon-theme", &icon_theme);
-    gsettings_set(
-        "org.cinnamon.desktop.interface",
-        "cursor-theme",
-        &cursor_theme,
-    );
+    gsettings_set("org.cinnamon.desktop.interface", "cursor-theme", &cursor_theme);
     gsettings_set("org.cinnamon.desktop.interface", "font-name", ui_font);
     gsettings_set("org.cinnamon.desktop.wm.preferences", "theme", &gtk_theme);
-    gsettings_set(
-        "org.cinnamon.desktop.wm.preferences",
-        "titlebar-font",
-        title_font,
-    );
+    gsettings_set("org.cinnamon.desktop.wm.preferences", "titlebar-font", title_font);
     gsettings_set(
         "org.cinnamon.desktop.wm.preferences",
         "button-layout",
@@ -136,19 +86,24 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     gsettings_set("org.gnome.desktop.interface", "cursor-theme", &cursor_theme);
     gsettings_set("org.gnome.desktop.interface", "font-name", ui_font);
 
-    // Ẩn biểu tượng hệ thống trên màn hình nền trừ Thùng rác (chuẩn CaramOS gốc)
     gsettings_set("org.nemo.desktop", "computer-icon-visible", "false");
     gsettings_set("org.nemo.desktop", "home-icon-visible", "false");
     gsettings_set("org.nemo.desktop", "trash-icon-visible", "true");
     gsettings_set("org.nemo.desktop", "network-icon-visible", "false");
     gsettings_set("org.nemo.desktop", "volumes-visible", "false");
 
-    if let Some(uri) = find_default_wallpaper_uri() {
-        gsettings_set("org.cinnamon.desktop.background", "picture-uri", &uri);
-        gsettings_set("org.gnome.desktop.background", "picture-uri", &uri);
+    let light_wp = control::find_themed_wallpaper(false);
+    let dark_wp = control::find_themed_wallpaper(true);
+    if let Some(ref uri) = light_wp {
+        gsettings_set("org.cinnamon.desktop.background", "picture-uri", uri);
+        gsettings_set("org.cinnamon.desktop.background", "picture-options", "zoom");
+        gsettings_set("org.gnome.desktop.background", "picture-uri", uri);
+        gsettings_set("org.gnome.desktop.background", "picture-options", "zoom");
+    }
+    if let Some(ref dark_uri) = dark_wp.or(light_wp) {
+        gsettings_set("org.gnome.desktop.background", "picture-uri-dark", dark_uri);
     }
 
-    // Đăng ký giao thức sâu `caramos-app://` cho Trung tâm Ứng dụng
     let _ = Command::new("xdg-mime")
         .args([
             "default",
@@ -160,19 +115,4 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
         .status();
 
     atomic_write_bytes(&marker, b"1\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_clean_wallpaper_filename;
-
-    #[test]
-    fn filters_out_plymouth_frames_from_wallpapers() {
-        assert!(!is_clean_wallpaper_filename("animation-0001.png"));
-        assert!(!is_clean_wallpaper_filename("throbber-0036.png"));
-        assert!(!is_clean_wallpaper_filename("plymouth-logo.png"));
-        assert!(!is_clean_wallpaper_filename("splash.png"));
-        assert!(is_clean_wallpaper_filename("default.png"));
-        assert!(is_clean_wallpaper_filename("indigo-night.png"));
-    }
 }
