@@ -480,7 +480,9 @@ pub fn run_post_install() -> Result<(), CaramUiError> {
         "systemctl",
         &["disable", "fcitx5-lotus-server@user.service"],
     );
-
+    let _ = fs::remove_file("/etc/lightdm/lightdm.conf.d/60-caramos-live-autologin.conf");
+    let _ = fs::remove_file("/etc/sudoers.d/caramos-live");
+    let _ = fs::remove_file("/usr/lib/live/config/0035-caramos-live-user");
     if !Path::new("/usr/bin/flatpak").is_file() {
         let _ = Command::new("apt-get")
             .env("DEBIAN_FRONTEND", "noninteractive")
