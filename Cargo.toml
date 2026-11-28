@@ -7,9 +7,9 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "0.1.0"
 edition = "2021"
-authors = ["LocShadowVN <LocShadowVN@users.noreply.github.com>"]
+authors = ["LocShadowVN & CaramOS Contributors"]
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
@@ -17,7 +17,7 @@ async-channel = "2.3"
 clap = { version = "4.5", features = ["derive"] }
 gtk4 = { version = "0.9", features = ["v4_12"] }
 hex = "0.4"
-image = { version = ">=0.25.6, <0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+image = ">=0.25.6, <0.25.10"
 libadwaita = { version = "0.7", features = ["v1_4"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
@@ -25,9 +25,3 @@ tempfile = "3.14"
 thiserror = "2.0"
 ureq = { version = "2.12", features = ["json"] }
 walkdir = "2.5"
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-strip = "symbols"
