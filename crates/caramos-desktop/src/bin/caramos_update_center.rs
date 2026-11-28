@@ -10,7 +10,9 @@
     unused_must_use
 )]
 
-use caramos_desktop::{CaramDesktopError, install_caramos_css, invoke_self_pkexec, open_external_url};
+use caramos_desktop::{
+    install_caramos_css, invoke_self_pkexec, open_external_url, CaramDesktopError,
+};
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
@@ -73,14 +75,23 @@ struct UpdateScan {
 
 impl UpdateScan {
     fn total(&self) -> usize {
-        usize::from(self.caramos_release.is_some()) + self.apt_items.len() + self.flatpak_items.len()
+        usize::from(self.caramos_release.is_some())
+            + self.apt_items.len()
+            + self.flatpak_items.len()
     }
 }
 
 #[derive(Debug)]
 enum UpgradeEvent {
-    Step { headline: String, log: String },
-    Done { ok: bool, detail: String, reboot_required: bool },
+    Step {
+        headline: String,
+        log: String,
+    },
+    Done {
+        ok: bool,
+        detail: String,
+        reboot_required: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,8 +130,14 @@ fn parse_semver(raw: &str) -> Option<(u32, u32, u32)> {
     let core = cleaned.split(['-', '+']).next().unwrap_or("");
     let mut parts = core.split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
-    let patch = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
     Some((major, minor, patch))
 }
 
@@ -174,7 +191,11 @@ fn check_github_release_update() -> Option<CaramOsReleaseUpdate> {
         .call()
         .ok()?;
     let rel: GhRelease = resp.into_json().ok()?;
-    let new_ver = rel.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
+    let new_ver = rel
+        .tag_name
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .to_string();
     if !is_newer_version(&current, &new_ver) {
         return None;
     }
@@ -250,7 +271,11 @@ fn scan_pending_updates() -> UpdateScan {
 
     let mut flatpak_items = Vec::new();
     if let Ok(out) = Command::new("flatpak")
-        .args(["remote-ls", "--updates", "--columns=application,name,version"])
+        .args([
+            "remote-ls",
+            "--updates",
+            "--columns=application,name,version",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -316,7 +341,9 @@ fn validate_ota_entry_path(raw: &str) -> bool {
         "boot/grub/themes/caramos/",
         "etc/caramos-version",
     ];
-    ALLOWED_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
+    ALLOWED_PREFIXES
+        .iter()
+        .any(|prefix| rel.starts_with(prefix))
 }
 
 fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), CaramDesktopError> {
@@ -375,14 +402,22 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
     if !extract_out.status.success() {
         return Err(CaramDesktopError::CommandFailed {
             action: "tar -xzf".to_string(),
-            detail: String::from_utf8_lossy(&extract_out.stderr).trim().to_string(),
+            detail: String::from_utf8_lossy(&extract_out.stderr)
+                .trim()
+                .to_string(),
         });
     }
 
     for (bin, args) in [
         ("/usr/bin/dconf", &["update"][..]),
-        ("/usr/bin/glib-compile-schemas", &["/usr/share/glib-2.0/schemas"][..]),
-        ("/usr/bin/update-desktop-database", &["/usr/share/applications"][..]),
+        (
+            "/usr/bin/glib-compile-schemas",
+            &["/usr/share/glib-2.0/schemas"][..],
+        ),
+        (
+            "/usr/bin/update-desktop-database",
+            &["/usr/share/applications"][..],
+        ),
     ] {
         if Path::new(bin).is_file() {
             let _ = Command::new(bin)
@@ -403,10 +438,12 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
             context: "Ghi /etc/caramos-version".to_string(),
             source: e,
         })?;
-        tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
-            context: "fsync /etc/caramos-version".to_string(),
-            source: e,
-        })?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(|e| CaramDesktopError::Io {
+                context: "fsync /etc/caramos-version".to_string(),
+                source: e,
+            })?;
         #[cfg(unix)]
         {
             let _ = fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644));
@@ -429,7 +466,10 @@ fn run_privileged_upgrade() -> Result<(), CaramDesktopError> {
             source: e,
         })?;
     if !upd.status.success() {
-        eprintln!("[WARN] apt-get update: {}", String::from_utf8_lossy(&upd.stderr).trim());
+        eprintln!(
+            "[WARN] apt-get update: {}",
+            String::from_utf8_lossy(&upd.stderr).trim()
+        );
     }
 
     let upg = Command::new("apt-get")
@@ -496,10 +536,12 @@ fn stream_download_verified(
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65_536];
     loop {
-        let n = reader.read(&mut buf).map_err(|e| CaramDesktopError::Network {
-            url: url.to_string(),
-            reason: e.to_string(),
-        })?;
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| CaramDesktopError::Network {
+                url: url.to_string(),
+                reason: e.to_string(),
+            })?;
         if n == 0 {
             break;
         }
@@ -521,10 +563,12 @@ fn stream_download_verified(
         }
     }
 
-    tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
-        context: "fsync tệp tải về".to_string(),
-        source: e,
-    })?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| CaramDesktopError::Io {
+            context: "fsync tệp tải về".to_string(),
+            source: e,
+        })?;
     #[cfg(unix)]
     {
         let _ = fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644));
@@ -621,7 +665,10 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&adw::WindowTitle::new(
         "Trung tâm Cập nhật",
-        &format!("CaramOS {} (Debian 13 & GitHub OTA)", read_installed_version()),
+        &format!(
+            "CaramOS {} (Debian 13 & GitHub OTA)",
+            read_installed_version()
+        ),
     )));
     let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
     refresh_btn.set_tooltip_text(Some("Kiểm tra bản phát hành & cập nhật mới"));
@@ -639,7 +686,9 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let spin = gtk4::Spinner::new();
     spin.set_size_request(36, 36);
     spin.start();
-    let check_lbl = gtk4::Label::new(Some("Đang kiểm tra bản phát hành CaramOS, Debian và Flathub..."));
+    let check_lbl = gtk4::Label::new(Some(
+        "Đang kiểm tra bản phát hành CaramOS, Debian và Flathub...",
+    ));
     check_lbl.add_css_class("dim-label");
     check_box.append(&spin);
     check_box.append(&check_lbl);
@@ -649,7 +698,9 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let up_to_date = adw::StatusPage::builder()
         .icon_name("emblem-ok-symbolic")
         .title("Hệ thống đã được cập nhật mới nhất")
-        .description("CaramOS, các gói hệ thống Debian 13 và ứng dụng Flathub đều ở phiên bản mới nhất.")
+        .description(
+            "CaramOS, các gói hệ thống Debian 13 và ứng dụng Flathub đều ở phiên bản mới nhất.",
+        )
         .build();
     let recheck_btn = gtk4::Button::with_label("Kiểm tra lại");
     recheck_btn.add_css_class("pill");
@@ -709,7 +760,10 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     log_tv.set_editable(false);
     log_tv.set_monospace(true);
     log_tv.set_wrap_mode(gtk4::WrapMode::WordChar);
-    let log_sc = gtk4::ScrolledWindow::builder().min_content_height(180).child(&log_tv).build();
+    let log_sc = gtk4::ScrolledWindow::builder()
+        .min_content_height(180)
+        .child(&log_tv)
+        .build();
     let log_exp = gtk4::Expander::new(Some("Xem chi tiết nhật ký"));
     log_exp.set_child(Some(&log_sc));
     prog_vbox.append(&prog_title);
@@ -794,7 +848,11 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                             let mut end = log_d.end_iter();
                             log_d.insert(&mut end, &format!("{}\n", log));
                         }
-                        UpgradeEvent::Done { ok, detail, reboot_required } => {
+                        UpgradeEvent::Done {
+                            ok,
+                            detail,
+                            reboot_required,
+                        } => {
                             busy_d.set(false);
                             *hold_d.borrow_mut() = None;
                             refresh_d.set_sensitive(true);
@@ -956,7 +1014,10 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                     let t = gtk4::Label::new(Some(&it.name));
                     t.set_xalign(0.0);
                     t.add_css_class("row-title");
-                    let s = gtk4::Label::new(Some(&format!("{} — {}", it.source_label, it.version_note)));
+                    let s = gtk4::Label::new(Some(&format!(
+                        "{} — {}",
+                        it.source_label, it.version_note
+                    )));
                     s.set_xalign(0.0);
                     s.set_wrap(true);
                     s.add_css_class("dim-label");
@@ -1146,8 +1207,12 @@ mod tests {
 
     #[test]
     fn ota_path_validator_blocks_traversal_and_system_binaries() {
-        assert!(validate_ota_entry_path("./usr/local/bin/caramos-app-center"));
-        assert!(validate_ota_entry_path("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js"));
+        assert!(validate_ota_entry_path(
+            "./usr/local/bin/caramos-app-center"
+        ));
+        assert!(validate_ota_entry_path(
+            "usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js"
+        ));
         assert!(validate_ota_entry_path("./usr/local/bin/"));
         assert!(!validate_ota_entry_path("../etc/shadow"));
         assert!(!validate_ota_entry_path("/etc/passwd"));

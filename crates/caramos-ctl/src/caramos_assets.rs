@@ -1,4 +1,4 @@
-use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
+use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -111,7 +111,9 @@ fn is_real_scenic_wallpaper(path: &Path) -> bool {
             lower.as_str(),
             "bullet.png" | "entry.png" | "lock.png" | "splash.png"
         );
-    let big_enough = fs::metadata(path).map(|m| m.len() >= 80_000).unwrap_or(false);
+    let big_enough = fs::metadata(path)
+        .map(|m| m.len() >= 80_000)
+        .unwrap_or(false);
     ok_ext && !unwanted && big_enough && has_real_image_magic(path)
 }
 
@@ -219,7 +221,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
             if let Ok(rd) = fs::read_dir(&bg_dst) {
                 for entry in rd.flatten() {
                     let n = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                    if n.starts_with("caramos-light") || n.starts_with("caramos-dark") || n.starts_with("caramos-bg") {
+                    if n.starts_with("caramos-light")
+                        || n.starts_with("caramos-dark")
+                        || n.starts_with("caramos-bg")
+                    {
                         let _ = fs::remove_file(entry.path());
                     }
                 }
@@ -262,7 +267,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                         let _ = fs::copy(dark_wp, &dst);
                     }
                 }
-                let _ = writeln!(writer, "  ✔ Đã bổ sung {} hình nền nghệ thuật từ CaramOS gốc.", copied.len());
+                let _ = writeln!(
+                    writer,
+                    "  ✔ Đã bổ sung {} hình nền nghệ thuật từ CaramOS gốc.",
+                    copied.len()
+                );
             }
         }
         let _ = fs::remove_file(&zip_path);
@@ -290,7 +299,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let p = entry.path();
                 let in_icons_dir = p.to_string_lossy().to_ascii_lowercase().contains("/icons/");
                 let is_img = matches!(
-                    p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref(),
                     Some("png" | "svg")
                 );
                 if in_icons_dir && is_img {
@@ -301,7 +313,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                     }
                 }
             }
-            let _ = writeln!(writer, "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.", icon_count);
+            let _ = writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.",
+                icon_count
+            );
         }
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&ext);
@@ -334,10 +350,7 @@ fn configure_calamares_and_desktop(rootfs: &Path) -> Result<(), CaramCtlError> {
     if let Ok(raw) = fs::read_to_string(&settings_path) {
         let mut updated = raw.replace("branding: debian", "branding: caramos");
         if !updated.contains("shellprocess@caramos") {
-            updated = updated.replace(
-                "  - umount\n",
-                "  - shellprocess@caramos\n  - umount\n",
-            );
+            updated = updated.replace("  - umount\n", "  - shellprocess@caramos\n  - umount\n");
         }
         let _ = atomic_write_file(&settings_path, updated.as_bytes());
     }
@@ -416,7 +429,10 @@ Categories=System;
   "enable-autoscroll": { "type": "checkbox", "value": true }
 }
 "##;
-    atomic_write_file(&spices_dir.join("Cinnamenu@json/0.json"), cinnamenu_cfg.as_bytes())?;
+    atomic_write_file(
+        &spices_dir.join("Cinnamenu@json/0.json"),
+        cinnamenu_cfg.as_bytes(),
+    )?;
 
     let gwl_cfg = r##"{
   "pinned-apps": {
@@ -556,7 +572,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
                         let _ = atomic_write_file(&css_path, css.as_bytes());
                     }
                 }
-                let _ = writeln!(writer, "  ✔ Đã cài theme Cinnamon-Delight + Island Dock + Menu sạch.");
+                let _ = writeln!(
+                    writer,
+                    "  ✔ Đã cài theme Cinnamon-Delight + Island Dock + Menu sạch."
+                );
             }
         }
         let _ = fs::remove_file(&zip_path);
@@ -627,7 +646,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&nemo_actions)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
