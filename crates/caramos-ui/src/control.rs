@@ -1,4 +1,4 @@
-use crate::{atomic_write_bytes, CaramUiError};
+use crate::{CaramUiError, atomic_write_bytes};
 use clap::Subcommand;
 use std::env;
 use std::fs;
@@ -67,7 +67,9 @@ fn spawn_detached(bin: &str, args: &[&str]) {
 }
 
 pub fn is_valid_hex_color(hex: &str) -> bool {
-    hex.len() == 7 && hex.starts_with('#') && hex.bytes().skip(1).all(|b| b.is_ascii_hexdigit())
+    hex.len() == 7
+        && hex.starts_with('#')
+        && hex.bytes().skip(1).all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn parse_wpctl_volume(output: &str) -> Option<(u8, bool)> {
@@ -137,12 +139,9 @@ fn read_battery_percent() -> Option<u8> {
 }
 
 fn is_dark_mode() -> bool {
-    cmd_stdout(
-        "gsettings",
-        &["get", "org.gnome.desktop.interface", "color-scheme"],
-    )
-    .map(|s| s.contains("prefer-dark"))
-    .unwrap_or(false)
+    cmd_stdout("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"])
+        .map(|s| s.contains("prefer-dark"))
+        .unwrap_or(false)
 }
 
 fn read_power_profile() -> String {
@@ -198,11 +197,7 @@ fn apply_wallpaper_pair(active_uri: &str, dark_uri: Option<&str>) {
     gset("org.cinnamon.desktop.background", "picture-uri", active_uri);
     gset("org.cinnamon.desktop.background", "picture-options", "zoom");
     gset("org.gnome.desktop.background", "picture-uri", active_uri);
-    gset(
-        "org.gnome.desktop.background",
-        "picture-uri-dark",
-        dark_uri.unwrap_or(active_uri),
-    );
+    gset("org.gnome.desktop.background", "picture-uri-dark", dark_uri.unwrap_or(active_uri));
     gset("org.gnome.desktop.background", "picture-options", "zoom");
 }
 
@@ -213,24 +208,12 @@ fn toggle_dark_mode() {
 
     if next_dark {
         gset("org.gnome.desktop.interface", "color-scheme", "prefer-dark");
-        let shell = pick_installed_dir(
-            "/usr/share/themes",
-            &["CaramOS-Island-Dark", "Cinnamon-Delight", "Arc-Dark"],
-            "cinnamon",
-        )
-        .unwrap_or_else(|| "CaramOS-Island-Dark".to_string());
-        let gtk = pick_installed_dir(
-            "/usr/share/themes",
-            &["Arc-Dark", "Adwaita-dark", "Cinnamon-Delight"],
-            "gtk-3.0",
-        )
-        .unwrap_or_else(|| "Adwaita-dark".to_string());
-        let icon = pick_installed_dir(
-            "/usr/share/icons",
-            &["Tela-circle-dark", "Tela-circle", "Papirus-Dark", "Papirus"],
-            "index.theme",
-        )
-        .unwrap_or_else(|| "Papirus".to_string());
+        let shell = pick_installed_dir("/usr/share/themes", &["CaramOS-Island-Dark", "Cinnamon-Delight", "Arc-Dark"], "cinnamon")
+            .unwrap_or_else(|| "CaramOS-Island-Dark".to_string());
+        let gtk = pick_installed_dir("/usr/share/themes", &["Arc-Dark", "Adwaita-dark", "Cinnamon-Delight"], "gtk-3.0")
+            .unwrap_or_else(|| "Adwaita-dark".to_string());
+        let icon = pick_installed_dir("/usr/share/icons", &["Tela-circle-dark", "Tela-circle", "Papirus-Dark", "Papirus"], "index.theme")
+            .unwrap_or_else(|| "Papirus".to_string());
         gset("org.cinnamon.theme", "name", &shell);
         gset("org.cinnamon.desktop.interface", "gtk-theme", &gtk);
         gset("org.gnome.desktop.interface", "gtk-theme", &gtk);
@@ -241,20 +224,12 @@ fn toggle_dark_mode() {
         }
     } else {
         gset("org.gnome.desktop.interface", "color-scheme", "default");
-        let shell = pick_installed_dir(
-            "/usr/share/themes",
-            &["Cinnamon-Delight", "CaramOS-Island", "Arc"],
-            "cinnamon",
-        )
-        .unwrap_or_else(|| "CaramOS-Island".to_string());
+        let shell = pick_installed_dir("/usr/share/themes", &["Cinnamon-Delight", "CaramOS-Island", "Arc"], "cinnamon")
+            .unwrap_or_else(|| "CaramOS-Island".to_string());
         let gtk = pick_installed_dir("/usr/share/themes", &["Cinnamon-Delight", "Arc"], "gtk-3.0")
             .unwrap_or_else(|| "Arc".to_string());
-        let icon = pick_installed_dir(
-            "/usr/share/icons",
-            &["Tela-circle-light", "Tela-circle", "Papirus"],
-            "index.theme",
-        )
-        .unwrap_or_else(|| "Papirus".to_string());
+        let icon = pick_installed_dir("/usr/share/icons", &["Tela-circle-light", "Tela-circle", "Papirus"], "index.theme")
+            .unwrap_or_else(|| "Papirus".to_string());
         gset("org.cinnamon.theme", "name", &shell);
         gset("org.cinnamon.desktop.interface", "gtk-theme", &gtk);
         gset("org.gnome.desktop.interface", "gtk-theme", &gtk);
@@ -271,12 +246,7 @@ pub(crate) fn find_themed_wallpaper(dark: bool) -> Option<String> {
     let preferred: &[&str] = if dark {
         &["indigo-night.png", "indigo-night.jpg", "indigo-night.webp"]
     } else {
-        &[
-            "sage-mist.png",
-            "sage-mist.jpg",
-            "sage-mist.webp",
-            "default.png",
-        ]
+        &["sage-mist.png", "sage-mist.jpg", "sage-mist.webp", "default.png"]
     };
     for name in preferred {
         let p = dir.join(name);
@@ -284,7 +254,6 @@ pub(crate) fn find_themed_wallpaper(dark: bool) -> Option<String> {
             return Some(format!("file://{}", p.display()));
         }
     }
-
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .ok()?
         .flatten()
@@ -292,23 +261,14 @@ pub(crate) fn find_themed_wallpaper(dark: bool) -> Option<String> {
         .filter(|p| p.is_file())
         .collect();
     entries.sort();
-
     let target = if dark {
         entries.iter().find(|p| {
-            let s = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
             s.contains("indigo") || s.contains("night") || s.contains("dark")
         })
     } else {
         entries.iter().find(|p| {
-            let s = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
             s == "default.png" || s.contains("sage") || s.contains("light")
         })
     };
@@ -323,10 +283,7 @@ fn set_accent_color(hex: &str) -> Result<(), CaramUiError> {
         )));
     }
     let home = user_home();
-    atomic_write_bytes(
-        &home.join(".config/caramos/accent.hex"),
-        format!("{}\n", hex).as_bytes(),
-    )?;
+    atomic_write_bytes(&home.join(".config/caramos/accent.hex"), format!("{}\n", hex).as_bytes())?;
     let gtk_css = format!(
         "@define-color accent_bg_color {h};\n@define-color accent_color {h};\n@define-color accent_fg_color #ffffff;\n",
         h = hex
@@ -337,10 +294,7 @@ fn set_accent_color(hex: &str) -> Result<(), CaramUiError> {
 
 fn set_power_profile(profile: &str) -> Result<(), CaramUiError> {
     if !matches!(profile, "performance" | "balanced" | "power-saver") {
-        return Err(CaramUiError::InvalidArgs(format!(
-            "Chế độ nguồn không hợp lệ: '{}'",
-            profile
-        )));
+        return Err(CaramUiError::InvalidArgs(format!("Chế độ nguồn không hợp lệ: '{}'", profile)));
     }
     let _ = run_quiet("powerprofilesctl", &["set", profile]);
     Ok(())
@@ -379,15 +333,9 @@ fn set_brightness(percent: u8) {
 
 fn toggle_night_light() -> Result<(), CaramUiError> {
     let marker = user_home().join(".config/caramos/night-light");
-    let currently_on = fs::read_to_string(&marker)
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false);
+    let currently_on = fs::read_to_string(&marker).map(|s| s.trim() == "1").unwrap_or(false);
     let next_on = !currently_on;
-    let gamma = if next_on {
-        "1.0:0.86:0.70"
-    } else {
-        "1.0:1.0:1.0"
-    };
+    let gamma = if next_on { "1.0:0.86:0.70" } else { "1.0:1.0:1.0" };
     if let Some(xr) = cmd_stdout("xrandr", &["--query"]) {
         for line in xr.lines() {
             if line.contains(" connected") {
@@ -452,18 +400,24 @@ pub fn run_control_command(action: ControlAction) -> Result<(), CaramUiError> {
     }
 }
 
+/// Chạy cuối tiến trình Calamares bên trong máy đã cài:
+/// 1. Tạo nhóm `lotus` & chạy `systemd-sysusers` cho Lotus Uinput Smooth.
+/// 2. Thêm toàn bộ người dùng thật vào nhóm `input,lotus` & bật `fcitx5-lotus-server@<user>.service`.
+/// 3. Bảo đảm có `flatpak` và thêm sẵn kho `flathub` (`--system`) để App Center cài được ngay.
+/// 4. Ghi thêm bản sao boot UEFI dự phòng `\EFI\BOOT\BOOTX64.EFI`.
 pub fn run_post_install() -> Result<(), CaramUiError> {
     let _ = run_quiet("systemd-sysusers", &[]);
+    let _ = run_quiet("groupadd", &["-f", "lotus"]);
+
     let passwd = fs::read_to_string("/etc/passwd").map_err(|e| CaramUiError::Io {
         context: "Đọc /etc/passwd".to_string(),
         source: e,
     })?;
-    let lotus_service_exists = Path::new("/usr/lib/systemd/system/fcitx5-lotus-server@.service")
-        .exists()
+    let lotus_service_exists = Path::new("/usr/lib/systemd/system/fcitx5-lotus-server@.service").exists()
         || Path::new("/lib/systemd/system/fcitx5-lotus-server@.service").exists();
 
     for (username, home_dir) in parse_passwd_human_users(&passwd) {
-        let _ = run_quiet("usermod", &["-aG", "input", &username]);
+        let _ = run_quiet("usermod", &["-aG", "input,lotus", &username]);
         if lotus_service_exists {
             let unit = format!("fcitx5-lotus-server@{}.service", username);
             let _ = run_quiet("systemctl", &["enable", &unit]);
@@ -471,10 +425,40 @@ pub fn run_post_install() -> Result<(), CaramUiError> {
         let _ = fs::remove_file(home_dir.join("Desktop/install-caramos.desktop"));
     }
     let _ = fs::remove_file("/etc/skel/Desktop/install-caramos.desktop");
-    let _ = run_quiet(
-        "systemctl",
-        &["disable", "fcitx5-lotus-server@user.service"],
-    );
+    let _ = run_quiet("systemctl", &["disable", "fcitx5-lotus-server@user.service"]);
+
+    if !Path::new("/usr/bin/flatpak").is_file() {
+        let _ = Command::new("apt-get")
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .args(["install", "-y", "--no-install-recommends", "flatpak"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    if Path::new("/usr/bin/flatpak").is_file() {
+        let _ = run_quiet(
+            "flatpak",
+            &[
+                "remote-add",
+                "--if-not-exists",
+                "--system",
+                "flathub",
+                "https://dl.flathub.org/repo/flathub.flatpakrepo",
+            ],
+        );
+    }
+
+    if Path::new("/sys/firmware/efi").is_dir() && Path::new("/boot/efi").is_dir() {
+        let _ = run_quiet(
+            "grub-install",
+            &[
+                "--target=x86_64-efi",
+                "--efi-directory=/boot/efi",
+                "--bootloader-id=caramos",
+                "--removable",
+            ],
+        );
+    }
     Ok(())
 }
 
