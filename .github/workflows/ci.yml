@@ -1,14 +1,15 @@
-name: CaramOS 2.0 Rust CI & ISO Build
+name: CaramOS 2.0 Rust CI, ISO & GitHub OTA Release
 
 on:
   push:
     branches: ["main", "develop"]
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
     inputs:
       build_iso:
-        description: "Dựng ảnh ISO Debian 13 thật và tải lên Artifact để test QEMU"
+        description: "Dựng ảnh ISO Debian 13 + gói OTA bundle và tải lên Artifact"
         required: false
         default: true
         type: boolean
@@ -49,7 +50,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all
           if ! git diff --quiet -- '*.rs'; then
-            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/heads/* ]]; then
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add -u -- '*.rs'
@@ -71,7 +72,7 @@ jobs:
       - name: Build Release Binaries (5 Rust Binaries)
         run: cargo build --workspace --release
 
-      - name: Upload Release Binaries for ISO Job
+      - name: Upload Release Binaries for ISO & OTA Job
         uses: actions/upload-artifact@v4
         with:
           name: caramos-rust-binaries
@@ -102,11 +103,11 @@ jobs:
             --output-root /tmp/caramos-ci-branding \
             --wallpaper-dir config/includes.chroot/usr/share/backgrounds \
             --assets-dir assets --width 1280 --height 720
-          test -f /tmp/caramos-ci-branding/boot/grub/themes/caramos/background.png
-          test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/branding.desc
-          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center.desktop
+          test -f /tmp/caramos-ci-branding/usr/share/backgrounds/caramos/sage-mist.png
+          test -f /tmp/caramos-ci-branding/usr/share/backgrounds/caramos/indigo-night.png
+          test -f /tmp/caramos-ci-branding/etc/calamares/branding/caramos/show.qml
           test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-app-center-link.desktop
-          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-driver-check.desktop
+          test -f /tmp/caramos-ci-branding/usr/share/applications/caramos-update-center.desktop
           ./target/release/caramos-ctl build \
             --arch amd64 --work-dir /tmp/caramos-ci-work \
             --includes-dir config/includes.chroot \
@@ -121,13 +122,16 @@ jobs:
             --dry-run
 
   build-debian-iso:
-    name: Build Bootable Debian 13 ISO (QEMU Test Artifact)
+    name: Build Debian 13 ISO + OTA Bundle & Publish Tag Release
     needs: verify-rust-workspace
     if: >
+      startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.build_iso == true) ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'style: auto-format'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: write
     steps:
       - name: Free Runner Disk Space (~25 GB for mmdebstrap + squashfs)
         run: |
@@ -161,22 +165,38 @@ jobs:
           done
           gpg --batch --yes --dearmor -o /tmp/debian-trixie-keyring.gpg /tmp/debian-trixie-keys.asc
           chmod 644 /tmp/debian-trixie-keyring.gpg
-          gpg --show-keys /tmp/debian-trixie-keyring.gpg
 
-      - name: Prune Legacy Workspace Files & Stage Branding Overlay
+      - name: Resolve Version, Stage Branding & Package OTA Bundle
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="2.0.0"
+          fi
+          echo "CARAMOS_VERSION=${VER}" >> "$GITHUB_ENV"
+
           ./target/release/caramos-ctl prune --repo-root . --execute || true
-          mkdir -p work/branding work/iso-out
+          mkdir -p work/branding work/iso-out work/ota-stage/usr/local/bin
           ./target/release/caramos-ui branding \
             --output-root work/branding \
             --wallpaper-dir config/includes.chroot/usr/share/backgrounds \
             --assets-dir assets --width 1920 --height 1080
+          mkdir -p work/branding/etc
+          echo "${VER}" > work/branding/etc/caramos-version
 
-      - name: Build Full Hybrid BIOS+UEFI CaramOS 2.0 ISO (Debian 13 Trixie)
+          # Đóng gói gói nâng cấp OTA gọn (chỉ gồm đường dẫn trong whitelist của caramos-update-center)
+          cp -a work/branding/. work/ota-stage/
+          cp target/release/caramos-* work/ota-stage/usr/local/bin/
+          chmod 755 work/ota-stage/usr/local/bin/caramos-*
+          tar -czf work/iso-out/caramos-ota-bundle-amd64.tar.gz -C work/ota-stage .
+          (cd work/iso-out && sha256sum caramos-ota-bundle-amd64.tar.gz > caramos-ota-bundle-amd64.tar.gz.sha256)
+
+      - name: Build Full Hybrid BIOS+UEFI CaramOS ISO (Debian 13 Trixie)
         run: |
           set -euo pipefail
-          ISO_PATH="work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso"
+          ISO_NAME="CaramOS-${CARAMOS_VERSION}-debian-trixie-amd64.iso"
+          ISO_PATH="work/iso-out/${ISO_NAME}"
           sudo ./target/release/caramos-ctl build \
             --arch amd64 \
             --suite trixie \
@@ -192,18 +212,27 @@ jobs:
             --packages-file config/packages.txt \
             --output-iso "$ISO_PATH"
           sudo chown -R "$(id -u):$(id -g)" work/iso-out
-          (cd work/iso-out && sha256sum CaramOS-2.0.0-debian-trixie-amd64.iso > CaramOS-2.0.0-debian-trixie-amd64.iso.sha256)
+          (cd work/iso-out && sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256")
           ls -lh work/iso-out
           xorriso -indev "$ISO_PATH" -report_el_torito plain
 
-      - name: Upload CaramOS ISO & SHA256 Artifact for QEMU Testing
+      - name: Upload ISO & OTA Bundle Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CaramOS-2.0.0-debian-trixie-amd64-iso
-          path: |
-            work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso
-            work/iso-out/CaramOS-2.0.0-debian-trixie-amd64.iso.sha256
+          name: CaramOS-${{ env.CARAMOS_VERSION }}-debian-trixie-amd64
+          path: work/iso-out/*
           retention-days: 7
+
+      - name: Publish GitHub Release (Automatic on Tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" work/iso-out/* \
+            --title "CaramOS ${CARAMOS_VERSION} (Debian 13 Trixie)" \
+            --notes "Bản phát hành tự động gồm ảnh ISO Hybrid BIOS/UEFI và gói nâng cấp trực tuyến \`caramos-ota-bundle-amd64.tar.gz\` (có xác thực SHA-256) dùng trực tiếp cho Trung tâm Cập nhật CaramOS." \
+            --latest
 
   cleanup-legacy-repo:
     name: Auto-Commit Legacy File Removal (Manual Dispatch)
