@@ -10,9 +10,7 @@
     unused_must_use
 )]
 
-use caramos_desktop::{
-    install_caramos_css, invoke_self_pkexec, open_external_url, CaramDesktopError,
-};
+use caramos_desktop::{CaramDesktopError, install_caramos_css, invoke_self_pkexec, open_external_url};
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
@@ -34,11 +32,59 @@ use tempfile::NamedTempFile;
 use std::os::unix::fs::PermissionsExt;
 
 const APP_ID: &str = "org.caramos.UpdateCenter";
-const GITHUB_RELEASE_API: &str =
-    "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest";
+const GITHUB_RELEASES_API: &str =
+    "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases?per_page=15";
 const VERSION_FILE: &str = "/etc/caramos-version";
+const CHANNEL_FILE: &str = "/etc/caramos-channel";
 
 type RefreshFnSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateChannel {
+    Stable,
+    Testing,
+}
+
+impl UpdateChannel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Testing => "testing",
+        }
+    }
+
+    fn display_label(self) -> &'static str {
+        match self {
+            Self::Stable => "Ổn định (Stable)",
+            Self::Testing => "Thử nghiệm (Testing)",
+        }
+    }
+
+    fn flipped(self) -> Self {
+        match self {
+            Self::Stable => Self::Testing,
+            Self::Testing => Self::Stable,
+        }
+    }
+}
+
+/// Thứ tự phân cấp SemVer: Alpha < Beta < Testing < Rc < Stable
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PreRelease {
+    Alpha(u32),
+    Beta(u32),
+    Testing(u32),
+    Rc(u32),
+    Stable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CaramVersion {
+    major: u32,
+    minor: u32,
+    patch: u32,
+    pre: PreRelease,
+}
 
 #[derive(Debug, Clone)]
 struct PendingUpdate {
@@ -59,6 +105,7 @@ struct ReleaseAssetInfo {
 struct CaramOsReleaseUpdate {
     current_version: String,
     new_version: String,
+    is_prerelease: bool,
     title: String,
     notes: String,
     html_url: String,
@@ -68,6 +115,7 @@ struct CaramOsReleaseUpdate {
 
 #[derive(Debug, Clone)]
 struct UpdateScan {
+    channel: UpdateChannel,
     caramos_release: Option<CaramOsReleaseUpdate>,
     apt_items: Vec<PendingUpdate>,
     flatpak_items: Vec<PendingUpdate>,
@@ -75,23 +123,14 @@ struct UpdateScan {
 
 impl UpdateScan {
     fn total(&self) -> usize {
-        usize::from(self.caramos_release.is_some())
-            + self.apt_items.len()
-            + self.flatpak_items.len()
+        usize::from(self.caramos_release.is_some()) + self.apt_items.len() + self.flatpak_items.len()
     }
 }
 
 #[derive(Debug)]
 enum UpgradeEvent {
-    Step {
-        headline: String,
-        log: String,
-    },
-    Done {
-        ok: bool,
-        detail: String,
-        reboot_required: bool,
-    },
+    Step { headline: String, log: String },
+    Done { ok: bool, detail: String, reboot_required: bool },
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +142,10 @@ struct GhRelease {
     body: String,
     #[serde(default)]
     html_url: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     #[serde(default)]
     assets: Vec<GhAsset>,
 }
@@ -120,29 +163,75 @@ struct GhAsset {
 fn read_installed_version() -> String {
     fs::read_to_string(VERSION_FILE)
         .ok()
-        .map(|s| s.trim().trim_start_matches('v').to_string())
+        .map(|s| s.trim().trim_start_matches(['v', 'V']).to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn parse_semver(raw: &str) -> Option<(u32, u32, u32)> {
+fn read_current_channel() -> UpdateChannel {
+    let raw = fs::read_to_string(CHANNEL_FILE).unwrap_or_default();
+    if raw.trim().eq_ignore_ascii_case("testing") {
+        UpdateChannel::Testing
+    } else if raw.trim().eq_ignore_ascii_case("stable") {
+        UpdateChannel::Stable
+    } else if read_installed_version().contains('-') {
+        UpdateChannel::Testing
+    } else {
+        UpdateChannel::Stable
+    }
+}
+
+fn parse_trailing_num(rest: &str) -> u32 {
+    let digits: String = rest
+        .trim_start_matches(['.', '-', '_'])
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u32>().unwrap_or(0)
+}
+
+fn parse_caram_version(raw: &str) -> Option<CaramVersion> {
     let cleaned = raw.trim().trim_start_matches(['v', 'V']);
-    let core = cleaned.split(['-', '+']).next().unwrap_or("");
+    let without_build = cleaned.split('+').next().unwrap_or("");
+    let (core, pre_raw) = match without_build.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (without_build, None),
+    };
     let mut parts = core.split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts
-        .next()
-        .and_then(|p| p.parse::<u32>().ok())
-        .unwrap_or(0);
-    let patch = parts
-        .next()
-        .and_then(|p| p.parse::<u32>().ok())
-        .unwrap_or(0);
-    Some((major, minor, patch))
+    let minor = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+
+    let pre = match pre_raw {
+        None => PreRelease::Stable,
+        Some(tag) => {
+            let lower = tag.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("alpha") {
+                PreRelease::Alpha(parse_trailing_num(rest))
+            } else if let Some(rest) = lower.strip_prefix("beta") {
+                PreRelease::Beta(parse_trailing_num(rest))
+            } else if let Some(rest) = lower.strip_prefix("testing") {
+                PreRelease::Testing(parse_trailing_num(rest))
+            } else if let Some(rest) = lower.strip_prefix("test") {
+                PreRelease::Testing(parse_trailing_num(rest))
+            } else if let Some(rest) = lower.strip_prefix("rc") {
+                PreRelease::Rc(parse_trailing_num(rest))
+            } else {
+                PreRelease::Testing(parse_trailing_num(&lower))
+            }
+        }
+    };
+
+    Some(CaramVersion {
+        major,
+        minor,
+        patch,
+        pre,
+    })
 }
 
 fn is_newer_version(current: &str, candidate: &str) -> bool {
-    match (parse_semver(current), parse_semver(candidate)) {
+    match (parse_caram_version(current), parse_caram_version(candidate)) {
         (Some(cur), Some(cand)) => cand > cur,
         _ => false,
     }
@@ -178,27 +267,46 @@ fn extract_asset_sha(agent: &ureq::Agent, assets: &[GhAsset], asset: &GhAsset) -
     fetch_sha256_text(agent, &sha_asset.browser_download_url)
 }
 
-fn check_github_release_update() -> Option<CaramOsReleaseUpdate> {
-    let current = read_installed_version();
+fn check_github_release_update(channel: UpdateChannel) -> Option<CaramOsReleaseUpdate> {
+    let current_str = read_installed_version();
+    let current_ver = parse_caram_version(&current_str)?;
+
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(12))
         .timeout_read(Duration::from_secs(20))
         .build();
     let resp = agent
-        .get(GITHUB_RELEASE_API)
+        .get(GITHUB_RELEASES_API)
         .set("User-Agent", "caramos-update-center/2.0")
         .set("Accept", "application/vnd.github+json")
         .call()
         .ok()?;
-    let rel: GhRelease = resp.into_json().ok()?;
-    let new_ver = rel
-        .tag_name
-        .trim()
-        .trim_start_matches(['v', 'V'])
-        .to_string();
-    if !is_newer_version(&current, &new_ver) {
-        return None;
+    let releases: Vec<GhRelease> = resp.into_json().ok()?;
+
+    let mut best: Option<(CaramVersion, GhRelease)> = None;
+    for rel in releases {
+        if rel.draft {
+            continue;
+        }
+        let Some(ver) = parse_caram_version(&rel.tag_name) else {
+            continue;
+        };
+        let rel_is_pre = rel.prerelease || ver.pre != PreRelease::Stable;
+        if channel == UpdateChannel::Stable && rel_is_pre {
+            continue;
+        }
+        if ver <= current_ver {
+            continue;
+        }
+        let is_better = best.as_ref().map(|(b, _)| ver > *b).unwrap_or(true);
+        if is_better {
+            best = Some((ver, rel));
+        }
     }
+
+    let (best_ver, rel) = best?;
+    let new_ver = rel.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
+    let is_prerelease = rel.prerelease || best_ver.pre != PreRelease::Stable;
 
     let ota_bundle = rel
         .assets
@@ -223,8 +331,9 @@ fn check_github_release_update() -> Option<CaramOsReleaseUpdate> {
         });
 
     Some(CaramOsReleaseUpdate {
-        current_version: current,
+        current_version: current_str,
         new_version: new_ver,
+        is_prerelease,
         title: if rel.name.trim().is_empty() {
             rel.tag_name
         } else {
@@ -238,7 +347,8 @@ fn check_github_release_update() -> Option<CaramOsReleaseUpdate> {
 }
 
 fn scan_pending_updates() -> UpdateScan {
-    let caramos_release = check_github_release_update();
+    let channel = read_current_channel();
+    let caramos_release = check_github_release_update(channel);
 
     let mut apt_items = Vec::new();
     if let Ok(out) = Command::new("apt")
@@ -271,11 +381,7 @@ fn scan_pending_updates() -> UpdateScan {
 
     let mut flatpak_items = Vec::new();
     if let Ok(out) = Command::new("flatpak")
-        .args([
-            "remote-ls",
-            "--updates",
-            "--columns=application,name,version",
-        ])
+        .args(["remote-ls", "--updates", "--columns=application,name,version"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -306,6 +412,7 @@ fn scan_pending_updates() -> UpdateScan {
     }
 
     UpdateScan {
+        channel,
         caramos_release,
         apt_items,
         flatpak_items,
@@ -341,9 +448,44 @@ fn validate_ota_entry_path(raw: &str) -> bool {
         "boot/grub/themes/caramos/",
         "etc/caramos-version",
     ];
-    ALLOWED_PREFIXES
-        .iter()
-        .any(|prefix| rel.starts_with(prefix))
+    ALLOWED_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
+}
+
+fn atomic_write_root_line(dest: &Path, line: &str) -> Result<(), CaramDesktopError> {
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| CaramDesktopError::Io {
+        context: format!("Tạo tệp tạm cho '{}'", dest.display()),
+        source: e,
+    })?;
+    writeln!(tmp, "{}", line).map_err(|e| CaramDesktopError::Io {
+        context: format!("Ghi '{}'", dest.display()),
+        source: e,
+    })?;
+    tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
+        context: format!("fsync '{}'", dest.display()),
+        source: e,
+    })?;
+    #[cfg(unix)]
+    {
+        let _ = fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644));
+    }
+    tmp.persist(dest).map_err(|e| CaramDesktopError::Io {
+        context: format!("Lưu '{}'", dest.display()),
+        source: e.error,
+    })?;
+    Ok(())
+}
+
+fn run_privileged_set_channel(channel: &str) -> Result<(), CaramDesktopError> {
+    if !matches!(channel, "stable" | "testing") {
+        return Err(CaramDesktopError::InvalidTarget {
+            arg: channel.to_string(),
+            reason: "Kênh cập nhật chỉ chấp nhận 'stable' hoặc 'testing'",
+        });
+    }
+    atomic_write_root_line(Path::new(CHANNEL_FILE), channel)
 }
 
 fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), CaramDesktopError> {
@@ -358,7 +500,7 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
         });
     }
     let valid_ver = !new_version.is_empty()
-        && new_version.len() <= 32
+        && new_version.len() <= 40
         && new_version
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
@@ -369,7 +511,6 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
         });
     }
 
-    // Kiểm toán toàn bộ đường dẫn trong tệp nén trước khi giải nén vào `/`
     let list_out = Command::new("tar")
         .args(["-tzf", bundle_path])
         .output()
@@ -402,22 +543,14 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
     if !extract_out.status.success() {
         return Err(CaramDesktopError::CommandFailed {
             action: "tar -xzf".to_string(),
-            detail: String::from_utf8_lossy(&extract_out.stderr)
-                .trim()
-                .to_string(),
+            detail: String::from_utf8_lossy(&extract_out.stderr).trim().to_string(),
         });
     }
 
     for (bin, args) in [
         ("/usr/bin/dconf", &["update"][..]),
-        (
-            "/usr/bin/glib-compile-schemas",
-            &["/usr/share/glib-2.0/schemas"][..],
-        ),
-        (
-            "/usr/bin/update-desktop-database",
-            &["/usr/share/applications"][..],
-        ),
+        ("/usr/bin/glib-compile-schemas", &["/usr/share/glib-2.0/schemas"][..]),
+        ("/usr/bin/update-desktop-database", &["/usr/share/applications"][..]),
     ] {
         if Path::new(bin).is_file() {
             let _ = Command::new(bin)
@@ -428,32 +561,7 @@ fn run_privileged_apply_ota(bundle_path: &str, new_version: &str) -> Result<(), 
         }
     }
 
-    let ver_path = Path::new(VERSION_FILE);
-    if let Some(parent) = ver_path.parent() {
-        let mut tmp = NamedTempFile::new_in(parent).map_err(|e| CaramDesktopError::Io {
-            context: "Tạo tệp tạm /etc/caramos-version".to_string(),
-            source: e,
-        })?;
-        writeln!(tmp, "{}", new_version).map_err(|e| CaramDesktopError::Io {
-            context: "Ghi /etc/caramos-version".to_string(),
-            source: e,
-        })?;
-        tmp.as_file()
-            .sync_all()
-            .map_err(|e| CaramDesktopError::Io {
-                context: "fsync /etc/caramos-version".to_string(),
-                source: e,
-            })?;
-        #[cfg(unix)]
-        {
-            let _ = fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644));
-        }
-        tmp.persist(ver_path).map_err(|e| CaramDesktopError::Io {
-            context: "Lưu /etc/caramos-version".to_string(),
-            source: e.error,
-        })?;
-    }
-    Ok(())
+    atomic_write_root_line(Path::new(VERSION_FILE), new_version)
 }
 
 fn run_privileged_upgrade() -> Result<(), CaramDesktopError> {
@@ -466,10 +574,7 @@ fn run_privileged_upgrade() -> Result<(), CaramDesktopError> {
             source: e,
         })?;
     if !upd.status.success() {
-        eprintln!(
-            "[WARN] apt-get update: {}",
-            String::from_utf8_lossy(&upd.stderr).trim()
-        );
+        eprintln!("[WARN] apt-get update: {}", String::from_utf8_lossy(&upd.stderr).trim());
     }
 
     let upg = Command::new("apt-get")
@@ -536,12 +641,10 @@ fn stream_download_verified(
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65_536];
     loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| CaramDesktopError::Network {
-                url: url.to_string(),
-                reason: e.to_string(),
-            })?;
+        let n = reader.read(&mut buf).map_err(|e| CaramDesktopError::Network {
+            url: url.to_string(),
+            reason: e.to_string(),
+        })?;
         if n == 0 {
             break;
         }
@@ -563,12 +666,10 @@ fn stream_download_verified(
         }
     }
 
-    tmp.as_file()
-        .sync_all()
-        .map_err(|e| CaramDesktopError::Io {
-            context: "fsync tệp tải về".to_string(),
-            source: e,
-        })?;
+    tmp.as_file().sync_all().map_err(|e| CaramDesktopError::Io {
+        context: "fsync tệp tải về".to_string(),
+        source: e,
+    })?;
     #[cfg(unix)]
     {
         let _ = fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o644));
@@ -625,6 +726,16 @@ fn main() -> ExitCode {
             }
         };
     }
+    if args.get(1).map(String::as_str) == Some("--pkexec-set-channel") {
+        let ch = args.get(2).map(String::as_str).unwrap_or("");
+        return match run_privileged_set_channel(ch) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     let check_only = args.iter().any(|a| a == "--check");
     let pre_scan = if check_only {
@@ -662,16 +773,22 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let toast_overlay = adw::ToastOverlay::new();
     let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
+    let init_ch = read_current_channel();
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&adw::WindowTitle::new(
+    let header_title = adw::WindowTitle::new(
         "Trung tâm Cập nhật",
-        &format!(
-            "CaramOS {} (Debian 13 & GitHub OTA)",
-            read_installed_version()
-        ),
-    )));
+        &format!("CaramOS {} • Kênh: {}", read_installed_version(), init_ch.display_label()),
+    );
+    header.set_title_widget(Some(&header_title));
+
+    let channel_btn = gtk4::Button::with_label(match init_ch {
+        UpdateChannel::Stable => "Kênh: Stable",
+        UpdateChannel::Testing => "Kênh: Testing",
+    });
+    channel_btn.set_tooltip_text(Some("Chuyển giữa kênh Ổn định (Stable) và Thử nghiệm (Testing)"));
     let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
     refresh_btn.set_tooltip_text(Some("Kiểm tra bản phát hành & cập nhật mới"));
+    header.pack_start(&channel_btn);
     header.pack_end(&refresh_btn);
     root.append(&header);
 
@@ -686,9 +803,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let spin = gtk4::Spinner::new();
     spin.set_size_request(36, 36);
     spin.start();
-    let check_lbl = gtk4::Label::new(Some(
-        "Đang kiểm tra bản phát hành CaramOS, Debian và Flathub...",
-    ));
+    let check_lbl = gtk4::Label::new(Some("Đang kiểm tra bản phát hành CaramOS, Debian và Flathub..."));
     check_lbl.add_css_class("dim-label");
     check_box.append(&spin);
     check_box.append(&check_lbl);
@@ -698,9 +813,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let up_to_date = adw::StatusPage::builder()
         .icon_name("emblem-ok-symbolic")
         .title("Hệ thống đã được cập nhật mới nhất")
-        .description(
-            "CaramOS, các gói hệ thống Debian 13 và ứng dụng Flathub đều ở phiên bản mới nhất.",
-        )
+        .description("CaramOS, các gói hệ thống Debian 13 và ứng dụng Flathub đều ở phiên bản mới nhất trên kênh hiện tại.")
         .build();
     let recheck_btn = gtk4::Button::with_label("Kiểm tra lại");
     recheck_btn.add_css_class("pill");
@@ -760,10 +873,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     log_tv.set_editable(false);
     log_tv.set_monospace(true);
     log_tv.set_wrap_mode(gtk4::WrapMode::WordChar);
-    let log_sc = gtk4::ScrolledWindow::builder()
-        .min_content_height(180)
-        .child(&log_tv)
-        .build();
+    let log_sc = gtk4::ScrolledWindow::builder().min_content_height(180).child(&log_tv).build();
     let log_exp = gtk4::Expander::new(Some("Xem chi tiết nhật ký"));
     log_exp.set_child(Some(&log_sc));
     prog_vbox.append(&prog_title);
@@ -798,6 +908,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
         let win_u = window.clone();
         let stack_u = stack.clone();
         let refresh_u = refresh_btn.clone();
+        let ch_btn_u = channel_btn.clone();
         let title_u = prog_title.clone();
         let status_u = prog_status.clone();
         let bar_u = prog_bar.clone();
@@ -812,6 +923,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
             busy_u.set(true);
             *hold_u.borrow_mut() = Some(app_u.hold());
             refresh_u.set_sensitive(false);
+            ch_btn_u.set_sensitive(false);
             title_u.set_text(heading);
             log_u.set_text("");
             status_u.set_text("Đang bắt đầu...");
@@ -835,6 +947,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
             let win_d = win_u.clone();
             let stack_d = stack_u.clone();
             let refresh_d = refresh_u.clone();
+            let ch_btn_d = ch_btn_u.clone();
             let status_d = status_u.clone();
             let log_d = log_u.clone();
             let done_d = done_u.clone();
@@ -848,14 +961,11 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                             let mut end = log_d.end_iter();
                             log_d.insert(&mut end, &format!("{}\n", log));
                         }
-                        UpgradeEvent::Done {
-                            ok,
-                            detail,
-                            reboot_required,
-                        } => {
+                        UpgradeEvent::Done { ok, detail, reboot_required } => {
                             busy_d.set(false);
                             *hold_d.borrow_mut() = None;
                             refresh_d.set_sensitive(true);
+                            ch_btn_d.set_sensitive(true);
                             let title = if ok && reboot_required {
                                 "Đã cập nhật xong (Nên khởi động lại)"
                             } else if ok {
@@ -888,8 +998,20 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
         let updates_container = updates_container.clone();
         let footer_lbl = footer_lbl.clone();
         let stack = stack.clone();
+        let header_title = header_title.clone();
+        let channel_btn = channel_btn.clone();
         let launcher = Rc::clone(&start_background_task);
         move |scan: &UpdateScan| {
+            header_title.set_subtitle(&format!(
+                "CaramOS {} • Kênh: {}",
+                read_installed_version(),
+                scan.channel.display_label()
+            ));
+            channel_btn.set_label(match scan.channel {
+                UpdateChannel::Stable => "Kênh: Stable",
+                UpdateChannel::Testing => "Kênh: Testing",
+            });
+
             while let Some(c) = updates_container.first_child() {
                 updates_container.remove(&c);
             }
@@ -903,9 +1025,14 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                 card.add_css_class("card");
                 card.add_css_class("summary-card");
 
+                let badge = if rel.is_prerelease {
+                    "Bản thử nghiệm (Testing)"
+                } else {
+                    "Bản chính thức (Stable)"
+                };
                 let t = gtk4::Label::new(Some(&format!(
-                    "Bản phát hành CaramOS mới: v{} (hiện tại: v{})",
-                    rel.new_version, rel.current_version
+                    "{}: v{} (hiện tại: v{})",
+                    badge, rel.new_version, rel.current_version
                 )));
                 t.set_xalign(0.0);
                 t.add_css_class("row-title");
@@ -940,11 +1067,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                             Box::new(move |tx| {
                                 let dl_dir = user_downloads_dir();
                                 let _ = tx.send_blocking(UpgradeEvent::Step {
-                                    headline: format!(
-                                        "Đang tải {} về {}...",
-                                        asset.name,
-                                        dl_dir.display()
-                                    ),
+                                    headline: format!("Đang tải {} về {}...", asset.name, dl_dir.display()),
                                     log: format!("GET {}", asset.download_url),
                                 });
                                 match stream_download_verified(
@@ -957,7 +1080,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                                         let _ = tx.send_blocking(UpgradeEvent::Done {
                                             ok: true,
                                             detail: format!(
-                                                "Đã tải xong và xác thực toàn vẹn ISO tại:\n{}",
+                                                "Đã tải xong và xác thực SHA-256 ISO tại:\n{}",
                                                 saved.display()
                                             ),
                                             reboot_required: false,
@@ -1014,10 +1137,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                     let t = gtk4::Label::new(Some(&it.name));
                     t.set_xalign(0.0);
                     t.add_css_class("row-title");
-                    let s = gtk4::Label::new(Some(&format!(
-                        "{} — {}",
-                        it.source_label, it.version_note
-                    )));
+                    let s = gtk4::Label::new(Some(&format!("{} — {}", it.source_label, it.version_note)));
                     s.set_xalign(0.0);
                     s.set_wrap(true);
                     s.add_css_class("dim-label");
@@ -1038,6 +1158,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     let trigger_refresh: Rc<dyn Fn()> = Rc::new({
         let stack = stack.clone();
         let refresh_btn = refresh_btn.clone();
+        let channel_btn = channel_btn.clone();
         let current_scan = Rc::clone(&current_scan);
         let render_scan = Rc::clone(&render_scan);
         let is_busy = Rc::clone(&is_busy);
@@ -1047,11 +1168,13 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
             }
             stack.set_visible_child_name("checking");
             refresh_btn.set_sensitive(false);
+            channel_btn.set_sensitive(false);
             let (tx, rx) = async_channel::bounded::<UpdateScan>(1);
             thread::spawn(move || {
                 let _ = tx.send_blocking(scan_pending_updates());
             });
             let btn_d = refresh_btn.clone();
+            let ch_d = channel_btn.clone();
             let scan_d = Rc::clone(&current_scan);
             let render_d = Rc::clone(&render_scan);
             glib::spawn_future_local(async move {
@@ -1059,6 +1182,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                     render_d(&rep);
                     *scan_d.borrow_mut() = Some(rep);
                     btn_d.set_sensitive(true);
+                    ch_d.set_sensitive(true);
                 }
             });
         }
@@ -1072,6 +1196,42 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
     {
         let r = Rc::clone(&trigger_refresh);
         recheck_btn.connect_clicked(move |_| r());
+    }
+    {
+        let busy_ch = Rc::clone(&is_busy);
+        let toast_ch = toast_overlay.clone();
+        let slot_ch = Rc::clone(&refresh_slot);
+        channel_btn.connect_clicked(move |_| {
+            if busy_ch.get() {
+                return;
+            }
+            let next_ch = read_current_channel().flipped();
+            let (tx, rx) = async_channel::bounded::<Result<UpdateChannel, String>>(1);
+            thread::spawn(move || {
+                let res = invoke_self_pkexec("--pkexec-set-channel", &[next_ch.as_str().to_string()])
+                    .map(|()| next_ch)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send_blocking(res);
+            });
+            let toast_d = toast_ch.clone();
+            let slot_d = Rc::clone(&slot_ch);
+            glib::spawn_future_local(async move {
+                if let Ok(res) = rx.recv().await {
+                    match res {
+                        Ok(ch) => {
+                            toast_d.add_toast(adw::Toast::new(&format!(
+                                "Đã chuyển sang kênh {}",
+                                ch.display_label()
+                            )));
+                            if let Some(ref f) = *slot_d.borrow() {
+                                f();
+                            }
+                        }
+                        Err(e) => toast_d.add_toast(adw::Toast::new(&e)),
+                    }
+                }
+            });
+        });
     }
     {
         let w = window.clone();
@@ -1122,10 +1282,7 @@ fn build_window(app: &adw::Application, initial_scan: Option<UpdateScan>) {
                                             headline: format!("Đang áp dụng bản cập nhật CaramOS v{}...", rel.new_version),
                                             log: format!("pkexec --pkexec-apply-ota {}", path.display()),
                                         });
-                                        let args = vec![
-                                            path.display().to_string(),
-                                            rel.new_version.clone(),
-                                        ];
+                                        let args = vec![path.display().to_string(), rel.new_version.clone()];
                                         match invoke_self_pkexec("--pkexec-apply-ota", &args) {
                                             Ok(()) => ota_applied = true,
                                             Err(e) => errors.push(e.to_string()),
@@ -1198,21 +1355,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compares_semver_correctly() {
-        assert!(is_newer_version("2.0.0", "2.1.0"));
-        assert!(is_newer_version("2.0.0", "v2.0.1"));
-        assert!(!is_newer_version("2.1.0", "2.0.9"));
-        assert!(!is_newer_version("2.0.0", "v2.0.0"));
+    fn semver_orders_testing_rc_and_stable_strictly() {
+        assert!(is_newer_version("2.0.0", "v2.0.1-testing.1"));
+        assert!(is_newer_version("2.0.1-testing.1", "v2.0.1-testing.2"));
+        assert!(is_newer_version("2.0.1-testing.2", "v2.0.1-rc.1"));
+        assert!(is_newer_version("2.0.1-rc.1", "v2.0.1"));
+        assert!(!is_newer_version("2.0.1", "v2.0.1-testing.9"));
+        assert!(!is_newer_version("2.0.1", "v2.0.1"));
     }
 
     #[test]
     fn ota_path_validator_blocks_traversal_and_system_binaries() {
-        assert!(validate_ota_entry_path(
-            "./usr/local/bin/caramos-app-center"
-        ));
-        assert!(validate_ota_entry_path(
-            "usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js"
-        ));
+        assert!(validate_ota_entry_path("./usr/local/bin/caramos-app-center"));
+        assert!(validate_ota_entry_path("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js"));
         assert!(validate_ota_entry_path("./usr/local/bin/"));
         assert!(!validate_ota_entry_path("../etc/shadow"));
         assert!(!validate_ota_entry_path("/etc/passwd"));
