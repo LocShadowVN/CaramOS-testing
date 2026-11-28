@@ -1,4 +1,4 @@
-name: CaramOS 2.0 Rust CI, ISO & GitHub OTA Release
+name: CaramOS Rust CI, ISO & Two-Channel Release (Testing / Stable)
 
 on:
   push:
@@ -122,7 +122,7 @@ jobs:
             --dry-run
 
   build-debian-iso:
-    name: Build Debian 13 ISO + OTA Bundle & Publish Tag Release
+    name: Build Debian 13 ISO + OTA Bundle & Publish Release (Testing/Stable)
     needs: verify-rust-workspace
     if: >
       startsWith(github.ref, 'refs/tags/v') ||
@@ -166,15 +166,26 @@ jobs:
           gpg --batch --yes --dearmor -o /tmp/debian-trixie-keyring.gpg /tmp/debian-trixie-keys.asc
           chmod 644 /tmp/debian-trixie-keyring.gpg
 
-      - name: Resolve Version, Stage Branding & Package OTA Bundle
+      - name: Resolve Version & Channel (Testing vs Stable), Stage Branding & Package OTA Bundle
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
+            if [[ "${VER}" == *-* ]]; then
+              CHANNEL="testing"
+              IS_PRE="true"
+            else
+              CHANNEL="stable"
+              IS_PRE="false"
+            fi
           else
-            VER="2.0.0"
+            VER="2.0.0-testing.0"
+            CHANNEL="testing"
+            IS_PRE="true"
           fi
           echo "CARAMOS_VERSION=${VER}" >> "$GITHUB_ENV"
+          echo "CARAMOS_CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
+          echo "CARAMOS_IS_PRERELEASE=${IS_PRE}" >> "$GITHUB_ENV"
 
           ./target/release/caramos-ctl prune --repo-root . --execute || true
           mkdir -p work/branding work/iso-out work/ota-stage/usr/local/bin
@@ -185,12 +196,15 @@ jobs:
           mkdir -p work/branding/etc
           echo "${VER}" > work/branding/etc/caramos-version
 
-          # Đóng gói gói nâng cấp OTA gọn (chỉ gồm đường dẫn trong whitelist của caramos-update-center)
+          # Đóng gói OTA bundle trước khi ghi etc/caramos-channel (không ghi đè kênh người dùng đã chọn)
           cp -a work/branding/. work/ota-stage/
           cp target/release/caramos-* work/ota-stage/usr/local/bin/
           chmod 755 work/ota-stage/usr/local/bin/caramos-*
           tar -czf work/iso-out/caramos-ota-bundle-amd64.tar.gz -C work/ota-stage .
           (cd work/iso-out && sha256sum caramos-ota-bundle-amd64.tar.gz > caramos-ota-bundle-amd64.tar.gz.sha256)
+
+          # Ghi kênh mặc định cho ảnh ISO cài mới
+          echo "${CHANNEL}" > work/branding/etc/caramos-channel
 
       - name: Build Full Hybrid BIOS+UEFI CaramOS ISO (Debian 13 Trixie)
         run: |
@@ -223,16 +237,23 @@ jobs:
           path: work/iso-out/*
           retention-days: 7
 
-      - name: Publish GitHub Release (Automatic on Tag v*)
+      - name: Publish GitHub Release (Testing = Pre-release, Stable = Latest)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" work/iso-out/* \
-            --title "CaramOS ${CARAMOS_VERSION} (Debian 13 Trixie)" \
-            --notes "Bản phát hành tự động gồm ảnh ISO Hybrid BIOS/UEFI và gói nâng cấp trực tuyến \`caramos-ota-bundle-amd64.tar.gz\` (có xác thực SHA-256) dùng trực tiếp cho Trung tâm Cập nhật CaramOS." \
-            --latest
+          if [ "${CARAMOS_IS_PRERELEASE}" = "true" ]; then
+            gh release create "${GITHUB_REF_NAME}" work/iso-out/* \
+              --title "CaramOS ${CARAMOS_VERSION} [Testing]" \
+              --notes "Bản thử nghiệm (kênh **Testing**) để kiểm thử phần cứng, driver và giao diện trước khi chốt bản Stable. Gồm ảnh ISO Hybrid BIOS/UEFI và gói nâng cấp OTA \`caramos-ota-bundle-amd64.tar.gz\` (SHA-256)." \
+              --prerelease
+          else
+            gh release create "${GITHUB_REF_NAME}" work/iso-out/* \
+              --title "CaramOS ${CARAMOS_VERSION} [Stable]" \
+              --notes "Bản phát hành ổn định chính thức (**Stable**) trên nền Debian 13 (Trixie) + backend 100% Rust. Gồm ảnh ISO Hybrid BIOS/UEFI và gói nâng cấp OTA \`caramos-ota-bundle-amd64.tar.gz\` (SHA-256)." \
+              --latest
+          fi
 
   cleanup-legacy-repo:
     name: Auto-Commit Legacy File Removal (Manual Dispatch)
