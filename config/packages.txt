@@ -44,6 +44,7 @@ ntfs-3g
 # --- Trình cài đặt đồ họa Calamares ---
 calamares
 calamares-settings-debian
+cracklib-runtime
 
 # --- Môi trường Cinnamon chuẩn CaramOS (Debian 13 Trixie) ---
 cinnamon-core
