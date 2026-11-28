@@ -1,4 +1,4 @@
-use crate::{CaramUiError, atomic_write_bytes, control};
+use crate::{atomic_write_bytes, control, CaramUiError};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -72,10 +72,18 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     gsettings_set("org.cinnamon.theme", "name", &shell_theme);
     gsettings_set("org.cinnamon.desktop.interface", "gtk-theme", &gtk_theme);
     gsettings_set("org.cinnamon.desktop.interface", "icon-theme", &icon_theme);
-    gsettings_set("org.cinnamon.desktop.interface", "cursor-theme", &cursor_theme);
+    gsettings_set(
+        "org.cinnamon.desktop.interface",
+        "cursor-theme",
+        &cursor_theme,
+    );
     gsettings_set("org.cinnamon.desktop.interface", "font-name", ui_font);
     gsettings_set("org.cinnamon.desktop.wm.preferences", "theme", &gtk_theme);
-    gsettings_set("org.cinnamon.desktop.wm.preferences", "titlebar-font", title_font);
+    gsettings_set(
+        "org.cinnamon.desktop.wm.preferences",
+        "titlebar-font",
+        title_font,
+    );
     gsettings_set(
         "org.cinnamon.desktop.wm.preferences",
         "button-layout",
