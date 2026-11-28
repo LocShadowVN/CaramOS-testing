@@ -11,12 +11,12 @@
 )]
 
 use caramos_desktop::{
-    detect_installed_catalog_ids, download_direct_deb_to_tmp, download_github_deb_to_tmp,
-    fetch_flathub_app_meta, find_catalog_app_by_flathub_id, format_size_mb, install_caramos_css,
-    install_flatpak_app, invoke_self_pkexec, is_flatpak_installed, open_external_url,
-    parse_install_link, remove_flatpak_app, run_privileged_apt_install, run_privileged_apt_remove,
-    AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta, InstallSource, StepSelectionMode,
-    CARAMOS_APP_CATALOG, VNLF_APPS_URL,
+    CARAMOS_APP_CATALOG, VNLF_APPS_URL, AppCategory, AppEntry, CaramDesktopError, FlathubAppMeta,
+    InstallSource, StepSelectionMode, detect_installed_catalog_ids, download_direct_deb_to_tmp,
+    download_github_deb_to_tmp, fetch_flathub_app_meta, find_catalog_app_by_flathub_id,
+    format_size_mb, install_caramos_css, install_flatpak_app, invoke_self_pkexec,
+    is_flatpak_installed, open_external_url, parse_install_link, remove_flatpak_app,
+    run_privileged_apt_install, run_privileged_apt_remove,
 };
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -27,14 +27,22 @@ use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
 use std::thread;
 
 const APP_ID: &str = "org.caramos.AppCenter";
+const FLATHUB_REPO_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
 type WorkerJob = Box<dyn FnOnce(async_channel::Sender<WorkerEvent>) + Send>;
 type WorkerLauncher = Rc<dyn Fn(&str, WorkerJob)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlatpakStatus {
+    Ready,
+    MissingFlathubRemote,
+    MissingBinary,
+}
 
 #[derive(Debug)]
 enum WorkerEvent {
@@ -47,6 +55,7 @@ enum WorkerEvent {
         succeeded: Vec<String>,
         failed: Vec<(String, String)>,
         installed_after: HashSet<String>,
+        flatpak_status_after: FlatpakStatus,
     },
 }
 
@@ -69,6 +78,7 @@ enum LinkLookupResult {
 struct AppState {
     installed_ids: HashSet<String>,
     selected_ids: BTreeSet<String>,
+    flatpak_status: FlatpakStatus,
     active_category_idx: usize,
     search_query: String,
     is_busy: bool,
@@ -80,6 +90,7 @@ impl AppState {
         Self {
             installed_ids: HashSet::new(),
             selected_ids: BTreeSet::new(),
+            flatpak_status: FlatpakStatus::Ready,
             active_category_idx: 0,
             search_query: String::new(),
             is_busy: false,
@@ -87,8 +98,9 @@ impl AppState {
         }
     }
 
-    fn apply_initial_scan(&mut self, installed: HashSet<String>) {
+    fn apply_initial_scan(&mut self, installed: HashSet<String>, fp_status: FlatpakStatus) {
         self.installed_ids = installed;
+        self.flatpak_status = fp_status;
         self.selected_ids.clear();
         for entry in CARAMOS_APP_CATALOG {
             if entry.default_selected
@@ -109,6 +121,57 @@ impl AppState {
                     && !e.is_preinstalled()
             })
             .collect()
+    }
+}
+
+fn detect_flatpak_status() -> FlatpakStatus {
+    let has_bin = Path::new("/usr/bin/flatpak").is_file()
+        || Command::new("flatpak")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    if !has_bin {
+        return FlatpakStatus::MissingBinary;
+    }
+
+    let has_flathub = Command::new("flatpak")
+        .args(["remotes", "--columns=name"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|line| line.trim().eq_ignore_ascii_case("flathub"))
+        })
+        .unwrap_or(false);
+
+    if has_flathub {
+        FlatpakStatus::Ready
+    } else {
+        FlatpakStatus::MissingFlathubRemote
+    }
+}
+
+fn add_user_flathub_remote() -> Result<(), String> {
+    let out = Command::new("flatpak")
+        .args([
+            "remote-add",
+            "--if-not-exists",
+            "--user",
+            "flathub",
+            FLATHUB_REPO_URL,
+        ])
+        .output()
+        .map_err(|e| format!("Không gọi được lệnh flatpak: {}", e))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 
@@ -221,7 +284,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     let loading_spinner = gtk4::Spinner::new();
     loading_spinner.set_size_request(36, 36);
     loading_spinner.start();
-    let loading_label = gtk4::Label::new(Some("Đang kiểm tra các ứng dụng đã cài..."));
+    let loading_label = gtk4::Label::new(Some("Đang kiểm tra ứng dụng và trạng thái Flatpak/Flathub..."));
     loading_label.add_css_class("dim-label");
     loading_box.append(&loading_spinner);
     loading_box.append(&loading_label);
@@ -255,6 +318,32 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
         .build();
     let browse_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
 
+    // Khung tự động hiện khi chưa có Flatpak hoặc chưa kích hoạt kho Flathub
+    let flatpak_banner = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    flatpak_banner.add_css_class("card");
+    flatpak_banner.add_css_class("summary-card");
+    flatpak_banner.set_visible(false);
+    let fp_text_vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    fp_text_vbox.set_hexpand(true);
+    let fp_title_lbl = gtk4::Label::new(Some("Chưa cấu hình Flatpak / Flathub"));
+    fp_title_lbl.set_xalign(0.0);
+    fp_title_lbl.add_css_class("row-title");
+    let fp_desc_lbl = gtk4::Label::new(Some(
+        "Các ứng dụng như ONLYOFFICE, Chrome, OBS, Scratch 3 cần Flatpak và kho Flathub để cài đặt.",
+    ));
+    fp_desc_lbl.set_xalign(0.0);
+    fp_desc_lbl.set_wrap(true);
+    fp_desc_lbl.add_css_class("dim-label");
+    fp_desc_lbl.add_css_class("secondary");
+    fp_text_vbox.append(&fp_title_lbl);
+    fp_text_vbox.append(&fp_desc_lbl);
+    let fp_setup_btn = gtk4::Button::with_label("Cài Flatpak & Flathub ngay");
+    fp_setup_btn.add_css_class("suggested-action");
+    fp_setup_btn.set_valign(gtk4::Align::Center);
+    flatpak_banner.append(&fp_text_vbox);
+    flatpak_banner.append(&fp_setup_btn);
+    browse_inner.append(&flatpak_banner);
+
     let search_entry = gtk4::SearchEntry::new();
     search_entry.set_placeholder_text(Some("Tìm ứng dụng theo tên hoặc công dụng..."));
     browse_inner.append(&search_entry);
@@ -285,9 +374,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     more_btn.add_css_class("flat");
     more_btn.add_css_class("more-apps-bar");
     let more_hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    let more_lbl = gtk4::Label::new(Some(
-        "Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net",
-    ));
+    let more_lbl = gtk4::Label::new(Some("Tìm thêm ứng dụng khác trên apps.vietnamlinuxfamily.net"));
     more_lbl.set_xalign(0.0);
     more_lbl.set_hexpand(true);
     more_lbl.set_wrap(true);
@@ -349,10 +436,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     log_view.set_editable(false);
     log_view.set_monospace(true);
     log_view.set_wrap_mode(gtk4::WrapMode::WordChar);
-    let log_scroll = gtk4::ScrolledWindow::builder()
-        .min_content_height(180)
-        .child(&log_view)
-        .build();
+    let log_scroll = gtk4::ScrolledWindow::builder().min_content_height(180).child(&log_view).build();
     let log_expander = gtk4::Expander::new(Some("Xem chi tiết nhật ký"));
     log_expander.set_child(Some(&log_scroll));
 
@@ -365,10 +449,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
     main_stack.add_named(&prog_clamp, Some("progress"));
 
     // Trang 5: Hoàn tất
-    let done_page = adw::StatusPage::builder()
-        .icon_name("emblem-ok-symbolic")
-        .title("Hoàn tất")
-        .build();
+    let done_page = adw::StatusPage::builder().icon_name("emblem-ok-symbolic").title("Hoàn tất").build();
     let done_actions = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
     done_actions.set_halign(gtk4::Align::Center);
     let back_to_list_btn = gtk4::Button::with_label("Quay lại danh sách");
@@ -430,6 +511,35 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
 
     let pending_link_flathub_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
+    let sync_flatpak_banner = Rc::new({
+        let state = Rc::clone(&state);
+        let banner = flatpak_banner.clone();
+        let title_lbl = fp_title_lbl.clone();
+        let desc_lbl = fp_desc_lbl.clone();
+        let setup_btn = fp_setup_btn.clone();
+        move || {
+            match state.borrow().flatpak_status {
+                FlatpakStatus::Ready => banner.set_visible(false),
+                FlatpakStatus::MissingBinary => {
+                    title_lbl.set_text("Chưa cài đặt Flatpak & kho Flathub");
+                    desc_lbl.set_text(
+                        "Các ứng dụng như ONLYOFFICE, Chrome, OBS, Scratch 3 cần Flatpak để cài đặt.",
+                    );
+                    setup_btn.set_label("Cài Flatpak & Flathub ngay");
+                    banner.set_visible(true);
+                }
+                FlatpakStatus::MissingFlathubRemote => {
+                    title_lbl.set_text("Chưa kích hoạt kho ứng dụng Flathub");
+                    desc_lbl.set_text(
+                        "Flatpak đã có sẵn trên máy — bấm nút bên cạnh để thêm kho Flathub (không cần mật khẩu).",
+                    );
+                    setup_btn.set_label("Kích hoạt Flathub ngay");
+                    banner.set_visible(true);
+                }
+            }
+        }
+    });
+
     let start_worker: WorkerLauncher = Rc::new({
         let app = app.clone();
         let state = Rc::clone(&state);
@@ -440,6 +550,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
         let log_buffer = log_buffer.clone();
         let done_page = done_page.clone();
         let window = window.clone();
+        let sync_banner = Rc::clone(&sync_flatpak_banner);
         move |headline: &str, job: WorkerJob| {
             {
                 let mut st = state.borrow_mut();
@@ -467,20 +578,16 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
             let log_buffer_done = log_buffer.clone();
             let done_page_done = done_page.clone();
             let window_done = window.clone();
+            let sync_banner_done = Rc::clone(&sync_banner);
 
             glib::spawn_future_local(async move {
                 while let Ok(ev) = rx.recv().await {
                     match ev {
-                        WorkerEvent::Progress {
-                            fraction,
-                            headline,
-                            log_line,
-                        } => {
+                        WorkerEvent::Progress { fraction, headline, log_line } => {
                             prog_status_done.set_text(&headline);
                             let clamped = fraction.clamp(0.0, 1.0);
                             prog_bar_done.set_fraction(clamped);
-                            prog_bar_done
-                                .set_text(Some(&format!("{}%", (clamped * 100.0).round() as u32)));
+                            prog_bar_done.set_text(Some(&format!("{}%", (clamped * 100.0).round() as u32)));
                             let mut end = log_buffer_done.end_iter();
                             log_buffer_done.insert(&mut end, &format!("{}\n", log_line));
                         }
@@ -488,15 +595,18 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                             succeeded,
                             failed,
                             installed_after,
+                            flatpak_status_after,
                         } => {
                             {
                                 let st = &mut *state_done.borrow_mut();
                                 st.is_busy = false;
                                 st.hold_guard = None;
                                 st.installed_ids = installed_after;
+                                st.flatpak_status = flatpak_status_after;
                                 let installed_ref = &st.installed_ids;
                                 st.selected_ids.retain(|id| !installed_ref.contains(id));
                             }
+                            sync_banner_done();
 
                             let (icon, title, desc) = if failed.is_empty() {
                                 (
@@ -505,10 +615,8 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                                     format!("Đã xử lý: {}", succeeded.join(", ")),
                                 )
                             } else {
-                                let err_lines: Vec<String> = failed
-                                    .iter()
-                                    .map(|(n, e)| format!("• {}: {}", n, e))
-                                    .collect();
+                                let err_lines: Vec<String> =
+                                    failed.iter().map(|(n, e)| format!("• {}: {}", n, e)).collect();
                                 (
                                     "dialog-warning-symbolic",
                                     "Hoàn tất với một số lỗi".to_string(),
@@ -533,6 +641,58 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
         }
     });
 
+    // Nút bấm cài Flatpak & kích hoạt Flathub 1 chạm ngay trên giao diện
+    {
+        let state_fp = Rc::clone(&state);
+        let worker_fp = Rc::clone(&start_worker);
+        fp_setup_btn.connect_clicked(move |_| {
+            let status_now = state_fp.borrow().flatpak_status;
+            worker_fp(
+                "Đang thiết lập Flatpak & Flathub",
+                Box::new(move |tx| {
+                    let mut ok = Vec::new();
+                    let mut err = Vec::new();
+                    if status_now == FlatpakStatus::MissingBinary {
+                        let _ = tx.send_blocking(WorkerEvent::Progress {
+                            fraction: 0.3,
+                            headline: "Đang cài đặt gói flatpak qua APT...".to_string(),
+                            log_line: "pkexec apt-get install -y flatpak".to_string(),
+                        });
+                        match invoke_self_pkexec("--pkexec-install", &["flatpak".to_string()]) {
+                            Ok(()) => ok.push("Flatpak".to_string()),
+                            Err(e) => {
+                                err.push(("Flatpak".to_string(), e.to_string()));
+                                let _ = tx.send_blocking(WorkerEvent::Finished {
+                                    succeeded: ok,
+                                    failed: err,
+                                    installed_after: detect_installed_catalog_ids(),
+                                    flatpak_status_after: detect_flatpak_status(),
+                                });
+                                return;
+                            }
+                        }
+                    }
+
+                    let _ = tx.send_blocking(WorkerEvent::Progress {
+                        fraction: 0.75,
+                        headline: "Đang thêm kho ứng dụng Flathub...".to_string(),
+                        log_line: format!("flatpak remote-add --if-not-exists --user flathub {}", FLATHUB_REPO_URL),
+                    });
+                    match add_user_flathub_remote() {
+                        Ok(()) => ok.push("Kho Flathub".to_string()),
+                        Err(e) => err.push(("Kho Flathub".to_string(), e)),
+                    }
+                    let _ = tx.send_blocking(WorkerEvent::Finished {
+                        succeeded: ok,
+                        failed: err,
+                        installed_after: detect_installed_catalog_ids(),
+                        flatpak_status_after: detect_flatpak_status(),
+                    });
+                }),
+            );
+        });
+    }
+
     let refresh_footer = Rc::new({
         let state = Rc::clone(&state);
         let summary_lbl = summary_lbl.clone();
@@ -548,17 +708,11 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 summary_lbl.set_text("Chưa chọn ứng dụng nào để cài thêm");
                 install_btn.set_sensitive(false);
             } else {
-                summary_lbl.set_text(&format!(
-                    "Đã chọn {} ứng dụng ({})",
-                    count,
-                    format_size_mb(total_mb)
-                ));
+                summary_lbl.set_text(&format!("Đã chọn {} ứng dụng ({})", count, format_size_mb(total_mb)));
                 install_btn.set_sensitive(true);
             }
             prev_btn.set_sensitive(st.active_category_idx > 0 && st.search_query.is_empty());
-            next_btn.set_sensitive(
-                st.active_category_idx + 1 < AppCategory::ALL.len() && st.search_query.is_empty(),
-            );
+            next_btn.set_sensitive(st.active_category_idx + 1 < AppCategory::ALL.len() && st.search_query.is_empty());
         }
     });
 
@@ -590,17 +744,11 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 btn.set_active(query.is_empty() && idx == cat_idx);
             }
 
-            let active_cat = AppCategory::ALL
-                .get(cat_idx)
-                .copied()
-                .unwrap_or(AppCategory::Office);
+            let active_cat = AppCategory::ALL.get(cat_idx).copied().unwrap_or(AppCategory::Office);
             let filtered: Vec<&'static AppEntry> = if query.is_empty() {
                 page_title_lbl.set_text(active_cat.title());
                 page_sub_lbl.set_text(active_cat.subtitle());
-                CARAMOS_APP_CATALOG
-                    .iter()
-                    .filter(|e| e.category == active_cat)
-                    .collect()
+                CARAMOS_APP_CATALOG.iter().filter(|e| e.category == active_cat).collect()
             } else {
                 page_title_lbl.set_text("Kết quả tìm kiếm");
                 page_sub_lbl.set_text(&format!("Đang lọc theo từ khóa \"{}\"", query));
@@ -613,8 +761,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     .collect()
             };
 
-            let use_radio = query.is_empty()
-                && active_cat.selection_mode() == StepSelectionMode::SingleOptional;
+            let use_radio = query.is_empty() && active_cat.selection_mode() == StepSelectionMode::SingleOptional;
             let mut radio_anchor: Option<gtk4::CheckButton> = None;
 
             for entry in filtered {
@@ -641,10 +788,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                             let mut st = state_c.borrow_mut();
                             if btn.is_active() {
                                 if use_radio {
-                                    for other in CARAMOS_APP_CATALOG
-                                        .iter()
-                                        .filter(|o| o.category == active_cat)
-                                    {
+                                    for other in CARAMOS_APP_CATALOG.iter().filter(|o| o.category == active_cat) {
                                         st.selected_ids.remove(other.id);
                                     }
                                 }
@@ -726,10 +870,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     if btn.is_active() {
                         {
                             let mut st = state_n.borrow_mut();
-                            for other in CARAMOS_APP_CATALOG
-                                .iter()
-                                .filter(|o| o.category == active_cat)
-                            {
+                            for other in CARAMOS_APP_CATALOG.iter().filter(|o| o.category == active_cat) {
                                 st.selected_ids.remove(other.id);
                             }
                         }
@@ -847,22 +988,39 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
             worker_l(
                 "Đang cài đặt ứng dụng từ Flathub",
                 Box::new(move |tx| {
+                    let mut ok = Vec::new();
+                    let mut err = Vec::new();
+                    if detect_flatpak_status() == FlatpakStatus::MissingBinary {
+                        let _ = tx.send_blocking(WorkerEvent::Progress {
+                            fraction: 0.15,
+                            headline: "Đang cài Flatpak trước khi cài ứng dụng Flathub...".to_string(),
+                            log_line: "pkexec apt-get install -y flatpak".to_string(),
+                        });
+                        if let Err(e) = invoke_self_pkexec("--pkexec-install", &["flatpak".to_string()]) {
+                            err.push(("Flatpak".to_string(), e.to_string()));
+                            let _ = tx.send_blocking(WorkerEvent::Finished {
+                                succeeded: ok,
+                                failed: err,
+                                installed_after: detect_installed_catalog_ids(),
+                                flatpak_status_after: detect_flatpak_status(),
+                            });
+                            return;
+                        }
+                    }
                     let _ = tx.send_blocking(WorkerEvent::Progress {
-                        fraction: 0.25,
+                        fraction: 0.35,
                         headline: format!("Đang tải và cài {} từ Flathub...", app_id),
                         log_line: format!("flatpak install --user flathub {}", app_id),
                     });
-                    let mut ok = Vec::new();
-                    let mut err = Vec::new();
                     match install_flatpak_app(&app_id) {
                         Ok(()) => ok.push(app_id),
                         Err(e) => err.push((app_id, e.to_string())),
                     }
-                    let installed_after = detect_installed_catalog_ids();
                     let _ = tx.send_blocking(WorkerEvent::Finished {
                         succeeded: ok,
                         failed: err,
-                        installed_after,
+                        installed_after: detect_installed_catalog_ids(),
+                        flatpak_status_after: detect_flatpak_status(),
                     });
                 }),
             );
@@ -909,18 +1067,23 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
         net_mon.connect_network_changed(move |_, _| route());
     }
 
+    // Quét danh mục đã cài + kiểm tra Flatpak/Flathub trên luồng nền
     {
-        let (scan_tx, scan_rx) = async_channel::bounded::<HashSet<String>>(1);
+        let (scan_tx, scan_rx) = async_channel::bounded::<(HashSet<String>, FlatpakStatus)>(1);
         thread::spawn(move || {
-            let _ = scan_tx.send_blocking(detect_installed_catalog_ids());
+            let installed = detect_installed_catalog_ids();
+            let fp_status = detect_flatpak_status();
+            let _ = scan_tx.send_blocking((installed, fp_status));
         });
         let state_init = Rc::clone(&state);
         let rebuild_init = Rc::clone(&rebuild_rows);
+        let sync_banner_init = Rc::clone(&sync_flatpak_banner);
         let stack_init = main_stack.clone();
         let net_init = net_mon.clone();
         glib::spawn_future_local(async move {
-            if let Ok(installed) = scan_rx.recv().await {
-                state_init.borrow_mut().apply_initial_scan(installed);
+            if let Ok((installed, fp_status)) = scan_rx.recv().await {
+                state_init.borrow_mut().apply_initial_scan(installed, fp_status);
+                sync_banner_init();
                 rebuild_init();
                 if stack_init.visible_child_name().as_deref() == Some("loading") {
                     if net_init.is_network_available() {
@@ -976,26 +1139,17 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                     } else {
                         match fetch_flathub_app_meta(&id_bg) {
                             Ok(FlathubAppMeta {
-                                id,
-                                name,
-                                summary,
-                                developer_name,
-                                project_license,
-                                urls,
+                                id, name, summary, developer_name, project_license, urls,
                             }) => LinkLookupResult::Ready {
                                 already_installed: is_flatpak_installed(&id),
                                 app_id: id,
                                 title: name,
                                 summary,
-                                developer: developer_name
-                                    .unwrap_or_else(|| "Cộng đồng Flathub".to_string()),
-                                licence: project_license
-                                    .unwrap_or_else(|| "Theo trang Flathub".to_string()),
+                                developer: developer_name.unwrap_or_else(|| "Cộng đồng Flathub".to_string()),
+                                licence: project_license.unwrap_or_else(|| "Theo trang Flathub".to_string()),
                                 homepage: urls.get("homepage").cloned(),
                             },
-                            Err(e) => LinkLookupResult::Error {
-                                message: e.to_string(),
-                            },
+                            Err(e) => LinkLookupResult::Error { message: e.to_string() },
                         }
                     };
                     let _ = lu_tx.send_blocking(result);
@@ -1004,13 +1158,7 @@ fn build_main_window(app: &adw::Application, link_rx: async_channel::Receiver<St
                 if let Ok(res) = lu_rx.recv().await {
                     match res {
                         LinkLookupResult::Ready {
-                            app_id,
-                            title,
-                            summary,
-                            developer,
-                            licence,
-                            homepage,
-                            already_installed,
+                            app_id, title, summary, developer, licence, homepage, already_installed,
                         } => {
                             title_l.set_text(&title);
                             desc_l.set_text(&summary);
@@ -1151,13 +1299,16 @@ fn execute_batch_install(entries: Vec<&'static AppEntry>, tx: async_channel::Sen
         }
     }
 
+    // Nếu có chọn app Flatpak mà máy chưa cài `flatpak`, tự gộp cài `flatpak` trong cùng 1 lần pkexec
+    if !flatpak_entries.is_empty() && detect_flatpak_status() == FlatpakStatus::MissingBinary {
+        apt_targets.push("flatpak".to_string());
+        apt_names.push("Flatpak".to_string());
+    }
+
     if !apt_targets.is_empty() {
         let _ = tx.send_blocking(WorkerEvent::Progress {
             fraction: 0.5,
-            headline: format!(
-                "Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...",
-                apt_names.join(", ")
-            ),
+            headline: format!("Đang cài {} qua APT (chỉ hỏi mật khẩu 1 lần)...", apt_names.join(", ")),
             log_line: format!("pkexec apt-get install {}", apt_targets.join(" ")),
         });
         match invoke_self_pkexec("--pkexec-install", &apt_targets) {
@@ -1179,6 +1330,16 @@ fn execute_batch_install(entries: Vec<&'static AppEntry>, tx: async_channel::Sen
         let _ = fs::remove_file(deb);
     }
 
+    if !flatpak_entries.is_empty() {
+        if let Err(e) = add_user_flathub_remote() {
+            let _ = tx.send_blocking(WorkerEvent::Progress {
+                fraction: 0.54,
+                headline: "Cảnh báo khi thêm kho Flathub...".to_string(),
+                log_line: e,
+            });
+        }
+    }
+
     let fp_total = flatpak_entries.len().max(1) as f64;
     for (idx, entry) in flatpak_entries.iter().enumerate() {
         if let InstallSource::Flatpak { app_id } = entry.source {
@@ -1195,11 +1356,11 @@ fn execute_batch_install(entries: Vec<&'static AppEntry>, tx: async_channel::Sen
         }
     }
 
-    let installed_after = detect_installed_catalog_ids();
     let _ = tx.send_blocking(WorkerEvent::Finished {
         succeeded,
         failed,
-        installed_after,
+        installed_after: detect_installed_catalog_ids(),
+        flatpak_status_after: detect_flatpak_status(),
     });
 }
 
@@ -1337,8 +1498,7 @@ fn show_confirm_uninstall_dialog(
                     }
                     InstallSource::GithubDeb { remove_pkgs, .. }
                     | InstallSource::DirectDeb { remove_pkgs, .. } => {
-                        let pkgs: Vec<String> =
-                            remove_pkgs.iter().map(|s| (*s).to_string()).collect();
+                        let pkgs: Vec<String> = remove_pkgs.iter().map(|s| (*s).to_string()).collect();
                         invoke_self_pkexec("--pkexec-remove", &pkgs)
                     }
                 };
@@ -1346,11 +1506,11 @@ fn show_confirm_uninstall_dialog(
                     Ok(()) => (vec![format!("Đã gỡ {}", entry.name)], Vec::new()),
                     Err(e) => (Vec::new(), vec![(entry.name.to_string(), e.to_string())]),
                 };
-                let installed_after = detect_installed_catalog_ids();
                 let _ = tx.send_blocking(WorkerEvent::Finished {
                     succeeded: ok,
                     failed: err,
-                    installed_after,
+                    installed_after: detect_installed_catalog_ids(),
+                    flatpak_status_after: detect_flatpak_status(),
                 });
             }),
         );
