@@ -1,5 +1,5 @@
 # ==============================================================================
-# CaramOS 2.0 — Danh mục gói chuẩn Debian 13 (Trixie) đã kiểm chứng cho mmdebstrap
+# CaramOS 0.1 — Danh mục gói chuẩn Debian 13 (Trixie) đã kiểm chứng cho mmdebstrap
 # ==============================================================================
 
 # --- Nhân Linux, Live Boot (QEMU/USB) & Khởi động Hybrid BIOS + UEFI/Secure Boot ---
@@ -76,6 +76,7 @@ arc-theme
 papirus-icon-theme
 breeze-cursor-theme
 gnome-terminal
+fastfetch
 gnome-calculator
 gnome-system-monitor
 eog
