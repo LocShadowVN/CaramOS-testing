@@ -23,7 +23,6 @@ use std::process::ExitCode;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use walkdir::WalkDir;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -43,11 +42,7 @@ pub enum CaramUiError {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "caramos-ui",
-    version,
-    about = "CaramOS 2.0 Branding, Control Backend, Theme Applier & OTA"
-)]
+#[command(name = "caramos-ui", version, about = "CaramOS 2.0 Branding, Control Backend, Theme Applier & OTA")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -55,7 +50,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Dựng cây overlay GRUB2, Plymouth, Slick Greeter, Calamares, Island Dock & Control Center
+    /// Dựng cây overlay GRUB2, Plymouth, Slick Greeter, Calamares Slideshow, Island Dock & Control Center
     Branding {
         #[arg(long)]
         output_root: PathBuf,
@@ -82,10 +77,7 @@ enum Commands {
     PostInstall,
     /// Kiểm tra nhanh bản phát hành OTA dạng ANSI trên terminal
     Ota {
-        #[arg(
-            long,
-            default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest"
-        )]
+        #[arg(long, default_value = "https://api.github.com/repos/LocShadowVN/CaramOS-testing/releases/latest")]
         endpoint: String,
         #[arg(long)]
         dry_run: bool,
@@ -98,10 +90,7 @@ pub(crate) fn atomic_write_bytes(dest: &Path, data: &[u8]) -> Result<(), CaramUi
 
 fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(), CaramUiError> {
     let parent = dest.parent().ok_or_else(|| {
-        CaramUiError::InvalidArgs(format!(
-            "Đường dẫn không có thư mục cha: {}",
-            dest.display()
-        ))
+        CaramUiError::InvalidArgs(format!("Đường dẫn không có thư mục cha: {}", dest.display()))
     })?;
     fs::create_dir_all(parent).map_err(|e| CaramUiError::Io {
         context: format!("Tạo thư mục '{}'", parent.display()),
@@ -121,11 +110,9 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
     })?;
     #[cfg(unix)]
     {
-        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| {
-            CaramUiError::Io {
-                context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
-                source: e,
-            }
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode)).map_err(|e| CaramUiError::Io {
+            context: format!("Đặt quyền {:o} cho '{}'", mode, dest.display()),
+            source: e,
         })?;
     }
     #[cfg(not(unix))]
@@ -138,51 +125,19 @@ fn atomic_write_bytes_with_mode(dest: &Path, data: &[u8], mode: u32) -> Result<(
     Ok(())
 }
 
-fn save_png_atomically(dest: &Path, img: &RgbaImage) -> Result<(), CaramUiError> {
+fn encode_png(img: &RgbaImage, label: &str) -> Result<Vec<u8>, CaramUiError> {
     let mut bytes = Vec::new();
     let mut cursor = Cursor::new(&mut bytes);
-    img.write_to(&mut cursor, ImageFormat::Png)
-        .map_err(|e| CaramUiError::Image {
-            context: dest.display().to_string(),
-            detail: e.to_string(),
-        })?;
+    img.write_to(&mut cursor, ImageFormat::Png).map_err(|e| CaramUiError::Image {
+        context: label.to_string(),
+        detail: e.to_string(),
+    })?;
+    Ok(bytes)
+}
+
+fn save_png_atomically(dest: &Path, img: &RgbaImage) -> Result<(), CaramUiError> {
+    let bytes = encode_png(img, &dest.display().to_string())?;
     atomic_write_bytes(dest, &bytes)
-}
-
-fn is_full_resolution_wallpaper(path: &Path) -> bool {
-    image::image_dimensions(path)
-        .map(|(w, h)| w >= 1024 && h >= 600)
-        .unwrap_or(false)
-}
-
-fn discover_existing_wallpaper(dir: &Path) -> Option<PathBuf> {
-    if !dir.is_dir() {
-        return None;
-    }
-    let mut candidates: Vec<PathBuf> = WalkDir::new(dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_type().is_file()
-                && e.file_name()
-                    .to_str()
-                    .map(theme_apply::is_clean_wallpaper_filename)
-                    .unwrap_or(false)
-                && is_full_resolution_wallpaper(e.path())
-        })
-        .map(|e| e.into_path())
-        .collect();
-    candidates.sort();
-    candidates
-        .iter()
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.eq_ignore_ascii_case("default.png") || s.contains("sage"))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .or_else(|| candidates.into_iter().next())
 }
 
 fn discover_existing_logo(assets_dir: &Path) -> Option<PathBuf> {
@@ -198,19 +153,62 @@ fn discover_existing_logo(assets_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn render_fallback_wallpaper(width: u32, height: u32) -> RgbaImage {
+/// Dựng hình nền sáng Sage Mist chuẩn CaramOS (sương xanh dịu, không đóng dấu logo giữa màn hình).
+fn render_sage_mist_wallpaper(width: u32, height: u32) -> RgbaImage {
     let w = width.max(640);
     let h = height.max(480);
     let mut img = RgbaImage::new(w, h);
-    let denom_x = (w.saturating_sub(1)).max(1) as f32;
-    let denom_y = (h.saturating_sub(1)).max(1) as f32;
+    let dx = (w.saturating_sub(1)).max(1) as f32;
+    let dy = (h.saturating_sub(1)).max(1) as f32;
+
     for (x, y, pixel) in img.enumerate_pixels_mut() {
-        let tx = x as f32 / denom_x;
-        let ty = y as f32 / denom_y;
-        let r = (24.0 + 19.0 * (1.0 - ty) + 10.0 * tx).clamp(0.0, 255.0) as u8;
-        let g = (52.0 + 54.0 * (1.0 - ty) + 12.0 * (1.0 - tx)).clamp(0.0, 255.0) as u8;
-        let b = (42.0 + 26.0 * (1.0 - ty) + 16.0 * tx).clamp(0.0, 255.0) as u8;
-        *pixel = Rgba([r, g, b, 255]);
+        let u = x as f32 / dx;
+        let v = y as f32 / dy;
+        let wave1 = (u * 3.8 + v * 1.4).sin() * 0.5 + 0.5;
+        let wave2 = (u * 2.1 - v * 2.7 + 1.2).cos() * 0.5 + 0.5;
+        let glow_x = u - 0.72;
+        let glow_y = v - 0.28;
+        let glow = (1.0 - (glow_x * glow_x + glow_y * glow_y).sqrt() * 1.35).clamp(0.0, 1.0);
+        let hill = (v - (0.58 + 0.08 * (u * 4.2).sin() + 0.04 * (u * 7.5).cos())).clamp(0.0, 1.0);
+
+        let r = 216.0 - 44.0 * v - 22.0 * hill + 18.0 * glow + 10.0 * wave1;
+        let g = 232.0 - 26.0 * v - 18.0 * hill + 16.0 * glow + 11.0 * wave2;
+        let b = 222.0 - 32.0 * v - 20.0 * hill + 14.0 * glow + 8.0 * wave1;
+        *pixel = Rgba([
+            r.clamp(0.0, 255.0) as u8,
+            g.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
+            255,
+        ]);
+    }
+    img
+}
+
+/// Dựng hình nền tối Indigo Night chuẩn CaramOS (xanh chàm - lục bảo sâu, tương phản tốt cho Dark mode & GRUB).
+fn render_indigo_night_wallpaper(width: u32, height: u32) -> RgbaImage {
+    let w = width.max(640);
+    let h = height.max(480);
+    let mut img = RgbaImage::new(w, h);
+    let dx = (w.saturating_sub(1)).max(1) as f32;
+    let dy = (h.saturating_sub(1)).max(1) as f32;
+
+    for (x, y, pixel) in img.enumerate_pixels_mut() {
+        let u = x as f32 / dx;
+        let v = y as f32 / dy;
+        let aurora = ((u * 4.0 + (v * 3.0).sin() * 0.6).sin() * 0.5 + 0.5) * (1.0 - (v - 0.42).abs() * 2.1).clamp(0.0, 1.0);
+        let gx = u - 0.28;
+        let gy = v - 0.65;
+        let emerald_glow = (1.0 - (gx * gx + gy * gy).sqrt() * 1.5).clamp(0.0, 1.0);
+
+        let r = 17.0 + 18.0 * (1.0 - v) + 20.0 * aurora + 8.0 * emerald_glow;
+        let g = 25.0 + 22.0 * (1.0 - v) + 46.0 * aurora + 38.0 * emerald_glow;
+        let b = 46.0 + 36.0 * (1.0 - v) + 52.0 * aurora + 26.0 * emerald_glow;
+        *pixel = Rgba([
+            r.clamp(0.0, 255.0) as u8,
+            g.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
+            255,
+        ]);
     }
     img
 }
@@ -460,79 +458,56 @@ function main(metadata, orientation, panelHeight, instanceId) {
 
 fn build_caramos_branding_overlay(
     output_root: &Path,
-    wallpaper_dir: Option<&Path>,
+    _wallpaper_dir: Option<&Path>,
     assets_dir: Option<&Path>,
     width: u32,
     height: u32,
 ) -> Result<(), CaramUiError> {
     if width < 640 || height < 480 {
-        return Err(CaramUiError::InvalidArgs(
-            "Độ phân giải tối thiểu là 640x480".to_string(),
-        ));
+        return Err(CaramUiError::InvalidArgs("Độ phân giải tối thiểu là 640x480".to_string()));
     }
 
-    let wallpaper_bytes = if let Some(wp_path) = wallpaper_dir.and_then(discover_existing_wallpaper)
-    {
-        fs::read(&wp_path).map_err(|e| CaramUiError::Io {
-            context: format!("Đọc hình nền '{}'", wp_path.display()),
-            source: e,
-        })?
-    } else {
-        let fallback = render_fallback_wallpaper(width, height);
-        let mut buf = Vec::new();
-        let mut cur = Cursor::new(&mut buf);
-        fallback
-            .write_to(&mut cur, ImageFormat::Png)
-            .map_err(|e| CaramUiError::Image {
-                context: "render_fallback_wallpaper".to_string(),
-                detail: e.to_string(),
-            })?;
-        buf
-    };
+    // Dựng bộ đôi hình nền Sage Mist (Sáng) & Indigo Night (Tối) chuẩn CaramOS 2.0 (không dán logo giữa nền)
+    let sage_bytes = encode_png(&render_sage_mist_wallpaper(width, height), "sage-mist.png")?;
+    let indigo_bytes = encode_png(&render_indigo_night_wallpaper(width, height), "indigo-night.png")?;
 
     let logo_img = if let Some(lp) = assets_dir.and_then(discover_existing_logo) {
-        image::open(&lp)
-            .map(|i| i.to_rgba8())
-            .unwrap_or_else(|_| render_fallback_logo(128))
+        image::open(&lp).map(|i| i.to_rgba8()).unwrap_or_else(|_| render_fallback_logo(128))
     } else {
         render_fallback_logo(128)
     };
 
+    let bg_dir = output_root.join("usr/share/backgrounds/caramos");
     let grub_dir = output_root.join("boot/grub/themes/caramos");
     let calamares_dir = output_root.join("etc/calamares/branding/caramos");
     let plymouth_dir = output_root.join("usr/share/plymouth/themes/caramos");
-    atomic_write_bytes(&grub_dir.join("background.png"), &wallpaper_bytes)?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/backgrounds/caramos/default.png"),
-        &wallpaper_bytes,
-    )?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/backgrounds/caramos-login.png"),
-        &wallpaper_bytes,
-    )?;
-    atomic_write_bytes(&calamares_dir.join("welcome.png"), &wallpaper_bytes)?;
 
-    save_png_atomically(
-        &output_root.join("usr/share/pixmaps/caramos-logo.png"),
-        &logo_img,
-    )?;
+    atomic_write_bytes(&bg_dir.join("sage-mist.png"), &sage_bytes)?;
+    atomic_write_bytes(&bg_dir.join("indigo-night.png"), &indigo_bytes)?;
+    atomic_write_bytes(&bg_dir.join("default.png"), &sage_bytes)?;
+    atomic_write_bytes(&output_root.join("usr/share/backgrounds/caramos-login.png"), &indigo_bytes)?;
+    atomic_write_bytes(&grub_dir.join("background.png"), &indigo_bytes)?;
+    atomic_write_bytes(&calamares_dir.join("welcome.png"), &indigo_bytes)?;
+
+    save_png_atomically(&output_root.join("usr/share/pixmaps/caramos-logo.png"), &logo_img)?;
     save_png_atomically(&calamares_dir.join("logo.png"), &logo_img)?;
     save_png_atomically(&plymouth_dir.join("logo.png"), &logo_img)?;
 
     let grub_theme = r##"title-text: "CaramOS 2.0 (Debian 13)"
 desktop-image: "background.png"
-desktop-color: "#18342a"
-terminal-font: "DejaVu Sans Mono Regular 12"
+desktop-color: "#11192e"
+terminal-font: "Unifont Regular 16"
 
 + boot_menu {
-    left = 20%
+    left = 18%
     top = 30%
-    width = 60%
+    width = 64%
     height = 42%
+    item_font = "Unifont Regular 16"
     item_color = "#d6e6dc"
     selected_item_color = "#ffffff"
-    item_height = 34
-    item_spacing = 8
+    item_height = 36
+    item_spacing = 10
 }
 
 + label {
@@ -540,6 +515,7 @@ terminal-font: "DejaVu Sans Mono Regular 12"
     left = 0
     width = 100%
     align = "center"
+    font = "Unifont Regular 16"
     text = "Dùng phím mũi tên để chọn và nhấn Enter để khởi động"
     color = "#b8d0c2"
 }
@@ -555,28 +531,22 @@ ModuleName=script
 ImageDir=/usr/share/plymouth/themes/caramos
 ScriptFile=/usr/share/plymouth/themes/caramos/caramos.script
 "##;
-    let plymouth_script = r##"Window.SetBackgroundTopColor(0.09, 0.20, 0.16);
-Window.SetBackgroundBottomColor(0.06, 0.13, 0.10);
+    let plymouth_script = r##"Window.SetBackgroundTopColor(0.07, 0.11, 0.19);
+Window.SetBackgroundBottomColor(0.06, 0.16, 0.14);
 logo.image = Image("logo.png");
 logo.sprite = Sprite(logo.image);
 logo.sprite.SetX(Window.GetWidth() / 2 - logo.image.GetWidth() / 2);
 logo.sprite.SetY(Window.GetHeight() / 2 - logo.image.GetHeight() / 2);
 "##;
-    atomic_write_bytes(
-        &plymouth_dir.join("caramos.plymouth"),
-        plymouth_desc.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &plymouth_dir.join("caramos.script"),
-        plymouth_script.as_bytes(),
-    )?;
+    atomic_write_bytes(&plymouth_dir.join("caramos.plymouth"), plymouth_desc.as_bytes())?;
+    atomic_write_bytes(&plymouth_dir.join("caramos.script"), plymouth_script.as_bytes())?;
 
     let calamares_desc = r##"---
 componentName: caramos
 welcomeStyleCalamares: true
 welcomeExpandingLogo: true
 windowExpanding: normal
-windowSize: 900px,560px
+windowSize: 920px,580px
 windowPlacement: center
 sidebar: widget
 navigation: widget
@@ -600,29 +570,128 @@ images:
 slideshow:               "show.qml"
 
 style:
-    SidebarBackground:        "#1e3d2b"
-    SidebarText:              "#f3f7f4"
+    SidebarBackground:        "#15222c"
+    SidebarText:              "#e5efe9"
     SidebarTextCurrent:       "#ffffff"
     SidebarBackgroundCurrent: "#2b6a44"
 "##;
-    let calamares_qml = r##"import QtQuick 2.0;
-import calamares.slideshow 1.0;
 
-Presentation {
-    id: presentation
-    Slide {
-        Image {
+    // Slideshow 4 trang giới thiệu CaramOS trong khi Calamares cài đặt (chuẩn CaramOS gốc)
+    let calamares_qml = r##"import QtQuick 2.0;
+
+Item {
+    id: root
+    property int currentSlide: 0
+    property var slides: [
+        {
+            tag: "01 / 04 — CHÀO MỪNG",
+            title: "CaramOS 2.0 — Linux thuần Việt trên nền Debian 13",
+            body: "Nhẹ, ổn định, bảo mật với toàn bộ công cụ lõi viết bằng Rust. Giao diện Sáng – Tối đồng bộ một chạm cùng thanh tác vụ 3 đảo nổi hiện đại."
+        },
+        {
+            tag: "02 / 04 — TIẾNG VIỆT TỪ ĐẦU",
+            title: "Bộ gõ Fcitx5 Lotus & Phông Be Vietnam Pro",
+            body: "Gõ tiếng Việt Telex mượt mà ngay sau khi cài xong, không gạch chân khó chịu. Chuyển nhanh Anh/Việt bằng Ctrl + Shift, đầy đủ múi giờ và lịch Việt Nam."
+        },
+        {
+            tag: "03 / 04 — ĐỦ ỨNG DỤNG QUEN THUỘC",
+            title: "Trung tâm Ứng dụng & Kiểm tra Driver một chạm",
+            body: "Chọn cài ONLYOFFICE, WPS, Google Chrome, Cốc Cốc, Zalo, phần mềm Giáo dục (Scratch 3, GeoGebra, Thonny) và tự chẩn đoán Wi-Fi, GPU, máy in."
+        },
+        {
+            tag: "04 / 04 — CẬP NHẬT LIỀN MẠCH",
+            title: "Nâng cấp trực tiếp không cần cài lại máy",
+            body: "Trung tâm Cập nhật tự động theo dõi bản phát hành mới từ GitHub cùng bản vá bảo mật Debian 13 và Flathub — an toàn và không mất dữ liệu cá nhân."
+        }
+    ]
+
+    Image {
+        anchors.fill: parent
+        source: "welcome.png"
+        fillMode: Image.PreserveAspectCrop
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#880f1822"
+    }
+
+    Timer {
+        interval: 6500
+        running: true
+        repeat: true
+        onTriggered: root.currentSlide = (root.currentSlide + 1) % root.slides.length
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        width: parent.width * 0.84
+        height: parent.height * 0.64
+        radius: 16
+        color: "#d816222c"
+        border.color: "#448ccfa5"
+        border.width: 1
+
+        Column {
             anchors.fill: parent
-            source: "welcome.png"
-            fillMode: Image.PreserveAspectCrop
+            anchors.margins: 32
+            spacing: 14
+
+            Row {
+                spacing: 12
+                Image {
+                    source: "logo.png"
+                    width: 44
+                    height: 44
+                    fillMode: Image.PreserveAspectFit
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.slides[root.currentSlide].tag
+                    color: "#8ccfa5"
+                    font.pixelSize: 13
+                    font.bold: true
+                }
+            }
+
+            Text {
+                width: parent.width
+                text: root.slides[root.currentSlide].title
+                color: "#ffffff"
+                font.pixelSize: 24
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                width: parent.width
+                text: root.slides[root.currentSlide].body
+                color: "#dce8e1"
+                font.pixelSize: 15
+                lineHeight: 1.45
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    Row {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 22
+        spacing: 10
+        Repeater {
+            model: root.slides.length
+            Rectangle {
+                width: index === root.currentSlide ? 26 : 10
+                height: 10
+                radius: 5
+                color: index === root.currentSlide ? "#3a855a" : "#66ffffff"
+            }
         }
     }
 }
 "##;
-    atomic_write_bytes(
-        &calamares_dir.join("branding.desc"),
-        calamares_desc.as_bytes(),
-    )?;
+    atomic_write_bytes(&calamares_dir.join("branding.desc"), calamares_desc.as_bytes())?;
     atomic_write_bytes(&calamares_dir.join("show.qml"), calamares_qml.as_bytes())?;
 
     let lightdm_conf = r##"[Seat:*]
@@ -643,14 +712,8 @@ show-hostname=true
 show-clock=true
 clock-format=%H:%M
 "##;
-    atomic_write_bytes(
-        &output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"),
-        lightdm_conf.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &output_root.join("etc/lightdm/slick-greeter.conf"),
-        slick_conf.as_bytes(),
-    )?;
+    atomic_write_bytes(&output_root.join("etc/lightdm/lightdm.conf.d/50-caramos.conf"), lightdm_conf.as_bytes())?;
+    atomic_write_bytes(&output_root.join("etc/lightdm/slick-greeter.conf"), slick_conf.as_bytes())?;
 
     let island_light_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #1f2923; }
 .panel-bottom { height: 48px; background-color: transparent; padding: 4px 12px; }
@@ -667,11 +730,13 @@ clock-format=%H:%M
     border-bottom: 3px solid #2b6a44;
     background-color: rgba(43, 106, 68, 0.14);
 }
-.popup-menu-boxpointer {
+.menu, .popup-menu-boxpointer {
     -arrow-border-radius: 14px;
     -arrow-background-color: rgba(250, 252, 250, 0.96);
     -arrow-border-color: rgba(43, 106, 68, 0.18);
     -arrow-border-width: 1px;
+    background-color: rgba(250, 252, 250, 0.96);
+    color: #1f2923;
 }
 "##;
     let island_dark_css = r##"stage { font-family: "Be Vietnam Pro", "Noto Sans", sans-serif; font-size: 10pt; color: #eef3f0; }
@@ -689,21 +754,17 @@ clock-format=%H:%M
     border-bottom: 3px solid #3a855a;
     background-color: rgba(58, 133, 90, 0.26);
 }
-.popup-menu-boxpointer {
+.menu, .popup-menu-boxpointer {
     -arrow-border-radius: 14px;
-    -arrow-background-color: rgba(26, 32, 29, 0.96);
+    -arrow-background-color: rgba(24, 30, 27, 0.96);
     -arrow-border-color: rgba(140, 207, 165, 0.18);
     -arrow-border-width: 1px;
+    background-color: rgba(24, 30, 27, 0.96);
+    color: #eef3f0;
 }
 "##;
-    atomic_write_bytes(
-        &output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"),
-        island_light_css.as_bytes(),
-    )?;
-    atomic_write_bytes(
-        &output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"),
-        island_dark_css.as_bytes(),
-    )?;
+    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island/cinnamon/cinnamon.css"), island_light_css.as_bytes())?;
+    atomic_write_bytes(&output_root.join("usr/share/themes/CaramOS-Island-Dark/cinnamon/cinnamon.css"), island_dark_css.as_bytes())?;
 
     stage_control_center_applet(output_root)?;
 
@@ -761,7 +822,7 @@ Type=Application
 Version=1.0
 Name=Trung tâm Cập nhật
 GenericName=Cập nhật hệ thống CaramOS
-Comment=Cập nhật hệ thống Debian 13 và ứng dụng Flathub an toàn
+Comment=Cập nhật hệ thống CaramOS, Debian 13 và ứng dụng Flathub an toàn
 Exec=/usr/local/bin/caramos-update-center
 Icon=system-software-update
 Terminal=false
@@ -847,11 +908,7 @@ fn fetch_ota_summary(endpoint: &str, dry_run: bool) -> String {
                 "Phiên bản mới nhất: {} ({})\n\n{}",
                 rel.tag_name,
                 rel.name,
-                if rel.body.trim().is_empty() {
-                    "Không có ghi chú phát hành."
-                } else {
-                    rel.body.trim()
-                }
+                if rel.body.trim().is_empty() { "Không có ghi chú phát hành." } else { rel.body.trim() }
             ),
             Err(e) => format!("Không đọc được JSON bản phát hành: {}", e),
         },
@@ -871,24 +928,11 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
         context: "Ghi OTA TUI".to_string(),
         source: e,
     })?;
-    writeln!(
-        out,
-        "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m"
-    )
-    .map_err(|e| CaramUiError::Io {
-        context: "Ghi OTA TUI".to_string(),
-        source: e,
-    })?;
-    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n{}\n", bar, summary).map_err(|e| {
-        CaramUiError::Io {
-            context: "Ghi OTA TUI".to_string(),
-            source: e,
-        }
-    })?;
-    out.flush().map_err(|e| CaramUiError::Io {
-        context: "flush stdout".to_string(),
-        source: e,
-    })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m  CaramOS 2.0 — Trình kiểm tra cập nhật OTA (Debian 13)\x1b[0m")
+        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
+    writeln!(out, "\x1b[1;38;2;140;207;165m{}\x1b[0m\n{}\n", bar, summary)
+        .map_err(|e| CaramUiError::Io { context: "Ghi OTA TUI".to_string(), source: e })?;
+    out.flush().map_err(|e| CaramUiError::Io { context: "flush stdout".to_string(), source: e })?;
 
     if is_tty && io::stdin().is_terminal() {
         let _ = write!(out, "Nhấn Enter để thoát...");
@@ -902,19 +946,9 @@ fn run_ota_tui(endpoint: &str, dry_run: bool) -> Result<(), CaramUiError> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Commands::Branding {
-            output_root,
-            wallpaper_dir,
-            assets_dir,
-            width,
-            height,
-        } => build_caramos_branding_overlay(
-            &output_root,
-            wallpaper_dir.as_deref(),
-            assets_dir.as_deref(),
-            width,
-            height,
-        ),
+        Commands::Branding { output_root, wallpaper_dir, assets_dir, width, height } => {
+            build_caramos_branding_overlay(&output_root, wallpaper_dir.as_deref(), assets_dir.as_deref(), width, height)
+        }
         Commands::ApplyTheme { force } => theme_apply::run_apply_theme(force),
         Commands::Control { action } => control::run_control_command(action),
         Commands::PostInstall => control::run_post_install(),
@@ -937,29 +971,14 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn branding_emits_control_center_update_center_and_skips_tiny_icons() {
+    fn branding_emits_sage_indigo_wallpapers_slideshow_and_control_center() {
         let dir = tempdir().unwrap();
-        let wp_dir = tempdir().unwrap();
-        // Tạo 1 ảnh logo nhỏ 128x128 giả lập watermark — phải bị lọc bỏ không lấy làm hình nền
-        save_png_atomically(
-            &wp_dir.path().join("starfruit.png"),
-            &render_fallback_logo(128),
-        )
-        .unwrap();
-        assert!(discover_existing_wallpaper(wp_dir.path()).is_none());
+        build_caramos_branding_overlay(dir.path(), None, None, 1280, 720).unwrap();
 
-        build_caramos_branding_overlay(dir.path(), Some(wp_dir.path()), None, 1280, 720).unwrap();
-        let (w, h) =
-            image::image_dimensions(dir.path().join("usr/share/backgrounds/caramos-login.png"))
-                .unwrap();
-        assert_eq!((w, h), (1280, 720));
-        assert!(dir
-            .path()
-            .join("usr/share/applications/caramos-update-center.desktop")
-            .is_file());
-        assert!(dir
-            .path()
-            .join("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js")
-            .is_file());
+        assert!(dir.path().join("usr/share/backgrounds/caramos/sage-mist.png").is_file());
+        assert!(dir.path().join("usr/share/backgrounds/caramos/indigo-night.png").is_file());
+        assert!(dir.path().join("etc/calamares/branding/caramos/show.qml").is_file());
+        assert!(dir.path().join("usr/share/applications/caramos-update-center.desktop").is_file());
+        assert!(dir.path().join("usr/share/cinnamon/applets/caramos-control-center@caramos/applet.js").is_file());
     }
 }
