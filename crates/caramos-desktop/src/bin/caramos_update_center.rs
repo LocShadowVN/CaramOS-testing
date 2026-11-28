@@ -246,7 +246,7 @@ fn parse_caram_version(raw: &str) -> Option<CaramVersion> {
         pre,
     })
 }
-
+#[cfg(test)]
 fn is_newer_version(current: &str, candidate: &str) -> bool {
     match (parse_caram_version(current), parse_caram_version(candidate)) {
         (Some(cur), Some(cand)) => cand > cur,
