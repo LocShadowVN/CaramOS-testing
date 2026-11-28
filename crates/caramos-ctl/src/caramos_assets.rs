@@ -1,4 +1,4 @@
-use crate::{CaramCtlError, atomic_write_file, copy_directory_tree_overlay};
+use crate::{atomic_write_file, copy_directory_tree_overlay, CaramCtlError};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -110,7 +110,9 @@ fn is_real_scenic_wallpaper(path: &Path) -> bool {
             lower.as_str(),
             "bullet.png" | "entry.png" | "lock.png" | "splash.png"
         );
-    let big_enough = fs::metadata(path).map(|m| m.len() >= 80_000).unwrap_or(false);
+    let big_enough = fs::metadata(path)
+        .map(|m| m.len() >= 80_000)
+        .unwrap_or(false);
     ok_ext && !unwanted && big_enough && has_real_image_magic(path)
 }
 
@@ -223,7 +225,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
             if let Ok(rd) = fs::read_dir(&bg_dst) {
                 for entry in rd.flatten() {
                     let n = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                    if n.starts_with("caramos-light") || n.starts_with("caramos-dark") || n.starts_with("caramos-bg") {
+                    if n.starts_with("caramos-light")
+                        || n.starts_with("caramos-dark")
+                        || n.starts_with("caramos-bg")
+                    {
                         let _ = fs::remove_file(entry.path());
                     }
                 }
@@ -237,7 +242,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                         let target = bg_dst.join(name);
                         copy_if_distinct(src, &target);
                         if target.is_file() {
-                            let _ = writeln!(writer, "    • Hình nền CaramOS gốc: {}", name.to_string_lossy());
+                            let _ = writeln!(
+                                writer,
+                                "    • Hình nền CaramOS gốc: {}",
+                                name.to_string_lossy()
+                            );
                             copied.push(target);
                         }
                     }
@@ -247,12 +256,20 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let light_wp = copied
                     .iter()
                     .find(|p| {
-                        let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+                        let s = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
                         s.contains("sage") || s.contains("mist")
                     })
                     .or_else(|| {
                         copied.iter().find(|p| {
-                            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+                            let s = p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
                             !s.contains("indigo") && !s.contains("night") && !s.contains("dark")
                         })
                     })
@@ -266,7 +283,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let dark_wp = copied
                     .iter()
                     .find(|p| {
-                        let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+                        let s = p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
                         s.contains("indigo") || s.contains("night") || s.contains("dark")
                     })
                     .or_else(|| copied.last());
@@ -275,10 +296,17 @@ fn sync_upstream_caramos_visuals<W: Write>(
                     copy_if_distinct(dp, &bg_dst.join("indigo-night.png"));
                     copy_if_distinct(dp, &rootfs.join("usr/share/backgrounds/caramos-login.png"));
                     copy_if_distinct(dp, &rootfs.join("boot/grub/themes/caramos/background.png"));
-                    copy_if_distinct(dp, &rootfs.join("etc/calamares/branding/caramos/welcome.png"));
+                    copy_if_distinct(
+                        dp,
+                        &rootfs.join("etc/calamares/branding/caramos/welcome.png"),
+                    );
                 }
 
-                let _ = writeln!(writer, "  ✔ Đã kích hoạt {} hình nền gốc từ VN-Linux-Family/CaramOS.", copied.len());
+                let _ = writeln!(
+                    writer,
+                    "  ✔ Đã kích hoạt {} hình nền gốc từ VN-Linux-Family/CaramOS.",
+                    copied.len()
+                );
             }
         }
         let _ = fs::remove_file(&zip_path);
@@ -306,7 +334,10 @@ fn sync_upstream_caramos_visuals<W: Write>(
                 let p = entry.path();
                 let in_icons_dir = p.to_string_lossy().to_ascii_lowercase().contains("/icons/");
                 let is_img = matches!(
-                    p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref(),
                     Some("png" | "svg")
                 );
                 if in_icons_dir && is_img {
@@ -317,7 +348,11 @@ fn sync_upstream_caramos_visuals<W: Write>(
                     }
                 }
             }
-            let _ = writeln!(writer, "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.", icon_count);
+            let _ = writeln!(
+                writer,
+                "  ✔ Đã đồng bộ {} icon thương hiệu cho Trung tâm Ứng dụng.",
+                icon_count
+            );
         }
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&ext);
@@ -364,7 +399,10 @@ operations:
       - calamares
       - calamares-settings-debian
 "##;
-    atomic_write_file(&rootfs.join("etc/calamares/modules/packages.conf"), packages_conf.as_bytes())?;
+    atomic_write_file(
+        &rootfs.join("etc/calamares/modules/packages.conf"),
+        packages_conf.as_bytes(),
+    )?;
 
     // Ghi users.conf chuẩn: Tắt chặn từ điển libpwquality (sửa lỗi error loading dictionary) & cấp nhóm `input` cho Lotus
     let users_conf = r##"defaultGroups:
@@ -402,7 +440,10 @@ passwordRequirements:
 
 userShell: /bin/bash
 "##;
-    atomic_write_file(&rootfs.join("etc/calamares/modules/users.conf"), users_conf.as_bytes())?;
+    atomic_write_file(
+        &rootfs.join("etc/calamares/modules/users.conf"),
+        users_conf.as_bytes(),
+    )?;
 
     let skel_desktop = rootfs.join("etc/skel/Desktop");
     let _ = fs::create_dir_all(&skel_desktop);
@@ -458,7 +499,10 @@ Categories=System;
   "enable-autoscroll": { "type": "checkbox", "value": true }
 }
 "##;
-    atomic_write_file(&spices_dir.join("Cinnamenu@json/0.json"), cinnamenu_cfg.as_bytes())?;
+    atomic_write_file(
+        &spices_dir.join("Cinnamenu@json/0.json"),
+        cinnamenu_cfg.as_bytes(),
+    )?;
 
     let gwl_cfg = r##"{
   "pinned-apps": {
@@ -595,7 +639,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
                         let _ = atomic_write_file(&css_path, css.as_bytes());
                     }
                 }
-                let _ = writeln!(writer, "  ✔ Đã cài theme Cinnamon-Delight + Island Dock + Menu sạch.");
+                let _ = writeln!(
+                    writer,
+                    "  ✔ Đã cài theme Cinnamon-Delight + Island Dock + Menu sạch."
+                );
             }
         }
         let _ = fs::remove_file(&zip_path);
@@ -664,7 +711,10 @@ pub fn install_caramos_desktop_assets<W: Write>(
         )?;
     }
     #[cfg(unix)]
-    for entry in WalkDir::new(&nemo_actions).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&nemo_actions)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if entry.file_type().is_file()
             && matches!(
                 entry.path().extension().and_then(|e| e.to_str()),
