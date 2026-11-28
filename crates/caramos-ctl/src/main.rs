@@ -694,40 +694,78 @@ OnlyShowIn=X-Cinnamon;
     Ok(())
 }
 
+/// Dựng logo CaramOS dạng bán khối Unicode TrueColor (hình tròn vàng cam #F5A623, quả khế 5 cánh trắng #FFFFFF bên trong)
+/// và ghi cấu hình toàn hệ thống `/etc/fastfetch/config.jsonc` để fastfetch không bao giờ rơi về logo Debian.
+fn render_caramos_fastfetch_logo() -> String {
+    const W: usize = 30;
+    const H: usize = 30; // 15 dòng terminal (mỗi ô ghép 2 pixel dọc bằng ký tự '▀'/'▄'/'█')
+    const GOLD: (u8, u8, u8) = (245, 166, 35);
+    const WHITE: (u8, u8, u8) = (255, 255, 255);
+
+    let sample = |px: usize, py: usize| -> Option<(u8, u8, u8)> {
+        let u = ((px as f32 + 0.5) / (W as f32)) * 2.0 - 1.0;
+        let v = ((py as f32 + 0.5) / (H as f32)) * 2.0 - 1.0;
+        let r = u.hypot(v);
+        if r > 0.94 {
+            return None;
+        }
+        let theta = v.atan2(u) + std::f32::consts::FRAC_PI_2;
+        let petal = ((5.0 * theta).cos() * 0.5 + 0.5).powf(1.35);
+        let star_r = 0.25 + 0.50 * petal;
+        if r <= star_r && r >= 0.08 {
+            Some(WHITE)
+        } else {
+            Some(GOLD)
+        }
+    };
+
+    let mut out = String::new();
+    for row in 0..(H / 2) {
+        for col in 0..W {
+            match (sample(col, row * 2), sample(col, row * 2 + 1)) {
+                (None, None) => out.push_str("\x1b[0m "),
+                (Some((r, g, b)), None) => {
+                    out.push_str(&format!("\x1b[0;38;2;{};{};{}m▀", r, g, b));
+                }
+                (None, Some((r, g, b))) => {
+                    out.push_str(&format!("\x1b[0;38;2;{};{};{}m▄", r, g, b));
+                }
+                (Some(t), Some(b)) if t == b => {
+                    out.push_str(&format!("\x1b[0;38;2;{};{};{}m█", t.0, t.1, t.2));
+                }
+                (Some(t), Some(b)) => {
+                    out.push_str(&format!(
+                        "\x1b[38;2;{};{};{};48;2;{};{};{}m▀",
+                        t.0, t.1, t.2, b.0, b.1, b.2
+                    ));
+                }
+            }
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out.push_str("\x1b[1;38;2;245;166;35m         CaramOS 0.1\x1b[0m\n");
+    out
+}
+
 fn configure_fastfetch_caramos_logo(rootfs: &Path) -> Result<(), CaramCtlError> {
-    let logo_ascii = r##"$1           .:+o+:.
-$1         .+ooooooo+.
-$1        +oooo   oooo+
-$1  .:++oo+ooo     ooo+oo++:.
-$1 .ooooooooo       ooooooooo.
-$1  '++ooooo         ooooo++'
-$1     .ooo           ooo.
-$1    .oooo     *     oooo.
-$1   .oooooo.       .oooooo.
-$1  .ooooooooo+... +ooooooooo.
-$1   '+ooooooo'   'ooooooo+'
-$2       C a r a m O S   0 . 1
-"##;
+    let logo_ansi = render_caramos_fastfetch_logo();
     let fastfetch_cfg = r##"{
   "logo": {
-    "type": "file",
+    "type": "file-raw",
     "source": "/usr/share/fastfetch/logos/caramos.txt",
-    "color": { "1": "yellow", "2": "green" },
     "padding": { "top": 1, "left": 2, "right": 3 }
   },
   "display": {
-    "color": { "keys": "green", "title": "yellow" }
+    "color": { "keys": "yellow", "title": "green" }
   }
 }
 "##;
     atomic_write_file(
         &rootfs.join("usr/share/fastfetch/logos/caramos.txt"),
-        logo_ascii.as_bytes(),
+        logo_ansi.as_bytes(),
     )?;
-    atomic_write_file(
-        &rootfs.join("etc/xdg/fastfetch/config.jsonc"),
-        fastfetch_cfg.as_bytes(),
-    )?;
+    atomic_write_file(&rootfs.join("etc/fastfetch/config.jsonc"), fastfetch_cfg.as_bytes())?;
+    atomic_write_file(&rootfs.join("etc/xdg/fastfetch/config.jsonc"), fastfetch_cfg.as_bytes())?;
     atomic_write_file(
         &rootfs.join("etc/skel/.config/fastfetch/config.jsonc"),
         fastfetch_cfg.as_bytes(),
