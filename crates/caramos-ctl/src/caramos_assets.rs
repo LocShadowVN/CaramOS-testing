@@ -379,8 +379,8 @@ operations:
     let install_desktop = r##"[Desktop Entry]
 Type=Application
 Version=1.0
-Name=Cài đặt CaramOS 2.0
-Comment=Cài đặt CaramOS 2.0 (Debian 13) lên ổ cứng
+Name=Cài đặt CaramOS 0.1
+Comment=Cài đặt CaramOS 0.1 (Debian 13) lên ổ cứng
 Exec=pkexec /usr/bin/calamares
 Icon=/usr/share/pixmaps/caramos-logo.png
 Terminal=false
