@@ -1,4 +1,4 @@
-use crate::{atomic_write_bytes, control, CaramUiError};
+use crate::{CaramUiError, atomic_write_bytes, control};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -42,26 +42,14 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     let themes_dir = Path::new("/usr/share/themes");
     let icons_dir = Path::new("/usr/share/icons");
 
-    let shell_theme = pick_first_existing(
-        themes_dir,
-        &["Cinnamon-Delight", "CaramOS-Island", "Arc"],
-        "cinnamon",
-    )
-    .unwrap_or_else(|| "CaramOS-Island".to_string());
+    let shell_theme = pick_first_existing(themes_dir, &["Cinnamon-Delight", "CaramOS-Island", "Arc"], "cinnamon")
+        .unwrap_or_else(|| "CaramOS-Island".to_string());
     let gtk_theme = pick_first_existing(themes_dir, &["Cinnamon-Delight", "Arc"], "gtk-3.0")
         .unwrap_or_else(|| "Arc".to_string());
-    let icon_theme = pick_first_existing(
-        icons_dir,
-        &["Tela-circle-light", "Tela-circle", "Papirus"],
-        "index.theme",
-    )
-    .unwrap_or_else(|| "Papirus".to_string());
-    let cursor_theme = pick_first_existing(
-        icons_dir,
-        &["Bibata-Modern-Classic", "breeze_cursors"],
-        "cursors",
-    )
-    .unwrap_or_else(|| "breeze_cursors".to_string());
+    let icon_theme = pick_first_existing(icons_dir, &["Tela-circle-light", "Tela-circle", "Papirus"], "index.theme")
+        .unwrap_or_else(|| "Papirus".to_string());
+    let cursor_theme = pick_first_existing(icons_dir, &["Bibata-Modern-Classic", "breeze_cursors"], "cursors")
+        .unwrap_or_else(|| "breeze_cursors".to_string());
 
     let (ui_font, title_font) = if has_be_vietnam_pro_font() {
         ("Be Vietnam Pro 10", "Be Vietnam Pro Semi-Bold 10")
@@ -72,23 +60,11 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     gsettings_set("org.cinnamon.theme", "name", &shell_theme);
     gsettings_set("org.cinnamon.desktop.interface", "gtk-theme", &gtk_theme);
     gsettings_set("org.cinnamon.desktop.interface", "icon-theme", &icon_theme);
-    gsettings_set(
-        "org.cinnamon.desktop.interface",
-        "cursor-theme",
-        &cursor_theme,
-    );
+    gsettings_set("org.cinnamon.desktop.interface", "cursor-theme", &cursor_theme);
     gsettings_set("org.cinnamon.desktop.interface", "font-name", ui_font);
     gsettings_set("org.cinnamon.desktop.wm.preferences", "theme", &gtk_theme);
-    gsettings_set(
-        "org.cinnamon.desktop.wm.preferences",
-        "titlebar-font",
-        title_font,
-    );
-    gsettings_set(
-        "org.cinnamon.desktop.wm.preferences",
-        "button-layout",
-        ":minimize,maximize,close",
-    );
+    gsettings_set("org.cinnamon.desktop.wm.preferences", "titlebar-font", title_font);
+    gsettings_set("org.cinnamon.desktop.wm.preferences", "button-layout", ":minimize,maximize,close");
     gsettings_set("org.gnome.desktop.interface", "gtk-theme", &gtk_theme);
     gsettings_set("org.gnome.desktop.interface", "icon-theme", &icon_theme);
     gsettings_set("org.gnome.desktop.interface", "cursor-theme", &cursor_theme);
@@ -113,14 +89,24 @@ pub fn run_apply_theme(force: bool) -> Result<(), CaramUiError> {
     }
 
     let _ = Command::new("xdg-mime")
-        .args([
-            "default",
-            "caramos-app-center-link.desktop",
-            "x-scheme-handler/caramos-app",
-        ])
+        .args(["default", "caramos-app-center-link.desktop", "x-scheme-handler/caramos-app"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+
+    if Path::new("/usr/bin/flatpak").is_file() {
+        let _ = Command::new("flatpak")
+            .args([
+                "remote-add",
+                "--if-not-exists",
+                "--user",
+                "flathub",
+                "https://dl.flathub.org/repo/flathub.flatpakrepo",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 
     atomic_write_bytes(&marker, b"1\n")
 }
